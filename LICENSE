@@ -1,0 +1,49 @@
+Traversio Dual Licensing Notice
+Copyright (c) 2026 GitSwift LLC and the Traversio contributors
+
+This repository is offered under a dual-licensing model:
+
+1. Community License
+   GNU Affero General Public License, version 3 or any later version
+   (AGPL-3.0-or-later)
+
+2. Commercial License
+   Available separately from GitSwift LLC for users who want to use,
+   distribute, or integrate Traversio under terms that are incompatible
+   with the AGPL.
+
+Community License Summary
+
+You may use, modify, and redistribute this software under the terms of
+the GNU Affero General Public License as published by the Free Software
+Foundation, either version 3 of the License, or, at your option, any
+later version.
+
+If you make the software or a modified version available for use over a
+network, the AGPL requires that the corresponding source code be made
+available to users under the same license terms.
+
+This program is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program. If not, see:
+
+https://www.gnu.org/licenses/agpl-3.0.html
+
+Commercial Licensing
+
+If your intended use is not compatible with the AGPL, you must obtain a
+separate commercial license from GitSwift LLC before using the software
+under those alternative terms.
+
+See `COMMERCIAL-LICENSE.md` for repository-level guidance.
+
+Third-party Notices
+
+The `TraversioCCrypto` target contains code adapted from OpenBSD,
+OpenSSH, and Ted Krovetz's UMAC implementation. Their original copyright
+and permission notices are preserved in the relevant source files.
+
+SPDX-License-Identifier: AGPL-3.0-or-later

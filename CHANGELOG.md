@@ -1,0 +1,63 @@
+# Changelog
+
+## 1.0.0 - 2026-05-25
+
+V1.0 establishes Traversio's first public Swift package surface.
+This release is a V1 integration boundary, not a blanket production-maturity
+claim for every deployment environment.
+
+Release hardening:
+
+- `SSHOpenSSHPrivateKeyInfo` now exposes public OpenSSH private-key envelope
+  metadata parsing for UI labels, capability displays, fingerprints, and
+  import diagnostics without decrypting the private-key block.
+- Added a checked public API baseline and `Tools/check-public-api.sh` release
+  check so source-compatibility changes are explicit before release candidates.
+- Added a release-metadata check that keeps `TraversioRelease.version`, the
+  source package release tag, and the SSH client identification banner aligned.
+- Public docs now spell out the V1 lifecycle and cancellation boundary for
+  connection ownership, best-effort session channel cleanup, local listener
+  scope exit, and remote forwarding cancellation fallback.
+- Remote TCP/IP forward listeners now ignore late channel messages for recently
+  closed forwarded channels while waiting for the next accepted connection,
+  fixing repeated remote/listener-backed forwarding workloads.
+- Support-export reports now redact common inline secret fragments in
+  server-provided language-tag fields for auth banners, password-change
+  prompts, remote disconnect/debug diagnostics, and SFTP status details.
+- Callback-backed and agent-backed public-key authentication now filter out
+  legacy `ssh-rsa` unless `SSHLegacyAlgorithmOptions.sshRSA` is explicitly
+  enabled for that connection or jump-host hop.
+- `SSHPortLatencyOptions` now validates through typed `SSHPortLatencyError`
+  failures instead of process-level precondition traps when invalid options reach
+  the measurement path.
+- `SSHPortLatencyError` now exposes `diagnosticReport` for copyable support
+  output covering invalid options, route setup timeout, SSH service-request
+  timeout, and no-successful-sample failures.
+- User callback failures can now expose an opt-in stable diagnostic code and
+  safe summary through `SSHCallbackFailureDiagnosticProviding`; Traversio copies
+  those fields into connection failure diagnostics, logs, and support reports.
+
+Implemented surface:
+
+- encrypted SSH transport with the documented V1 algorithm profile, explicit host trust, structured diagnostics, setup timeouts, reply timeouts, idle keepalive, and automatic local rekey policy
+- password, password-change callback, keyboard-interactive, Ed25519/RSA/ECDSA public-key auth, callback-backed signing, SSH agent-backed signing, encrypted OpenSSH key loading, key generation, and explicit legacy `ssh-rsa` compatibility
+- exec, streamed exec, named subsystem startup, PTY shell, environment requests, standard-error extended-data writes, PTY resize, outbound signal requests, and remote exit-signal reporting
+- SFTP metadata, listing, file handles, reads, writes, resumable transfers, recursive directory transfers, progress callbacks, path and handle mutation, filesystem queries, symlink/readlink, and optional OpenSSH fsync
+- single-file SCP receive/send helpers and local file URL wrappers
+- raw direct TCP/IP, local forwarding, dynamic SOCKS forwarding, raw remote TCP listeners, fixed remote TCP bridge helpers, direct streamlocal, remote streamlocal, SOCKS5 / HTTP CONNECT outer connection proxies, and API-level ProxyJump
+
+Validation for this source snapshot:
+
+- `swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warn-concurrency`
+- `swift test`
+
+Explicit post-V1 areas:
+
+- library-owned automatic reconnect
+- local `ssh_config` parsing
+- mandatory built-in trust-store persistence
+- mandatory Keychain-backed trust storage
+- hostbased auth, security-key auth, X11 forwarding, and auth-agent forwarding
+- broader host-certificate algorithm coverage beyond the current Ed25519 and ECDSA P-256 paths
+- broader non-OpenSSH streamlocal compatibility
+- release-quality public benchmark comparisons
