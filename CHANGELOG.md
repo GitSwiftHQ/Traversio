@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+## 1.0.1 - 2026-05-27
+
+Compatibility fix for migrated private keys:
+
+- Added `SSHAuthenticationMethod.privateKeyPEM(...)` and
+  `contentsOfFile:` helpers for apps that need to accept both OpenSSH
+  `openssh-key-v1` private keys, unencrypted PKCS#8 `PRIVATE KEY` PEM
+  containers for Ed25519/RSA/ECDSA, unencrypted traditional `EC PRIVATE KEY`
+  PEM containers, and traditional `RSA PRIVATE KEY` PEM containers.
+- Traditional `RSA PRIVATE KEY` PEM now supports passphrase-encrypted OpenSSL
+  legacy PEM with AES-CBC and DES-EDE3-CBC `DEK-Info` headers. Encrypted PKCS#8
+  `ENCRYPTED PRIVATE KEY` remains outside this release.
+- `SSHAuthenticationMethodError` now exposes readable localized descriptions, so
+  direct authentication input failures no longer surface through Foundation as
+  opaque enum-domain numeric errors.
+- Local OpenSSH matrix validation now includes real public-key login targets for
+  OpenSSL Ed25519/RSA/ECDSA PKCS#8 keys, traditional RSA/EC PEM keys,
+  encrypted traditional RSA PEM, and traditional RSA PEM with opt-in legacy
+  `ssh-rsa` userauth.
+
 ## 1.0.0 - 2026-05-25
 
 V1.0 establishes Traversio's first public Swift package surface.

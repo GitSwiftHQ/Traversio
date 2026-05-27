@@ -10,9 +10,9 @@ import Testing
 
 @Test
 func transportProtocolClientDefaultIdentificationMatchesReleaseVersion() {
-    #expect(TraversioRelease.version == "1.0.0")
-    #expect(TraversioRelease.sshSoftwareVersion == "Traversio_1.0.0")
-    #expect(TraversioRelease.sshIdentificationRawValue == "SSH-2.0-Traversio_1.0.0")
+    #expect(TraversioRelease.version == "1.0.1")
+    #expect(TraversioRelease.sshSoftwareVersion == "Traversio_1.0.1")
+    #expect(TraversioRelease.sshIdentificationRawValue == "SSH-2.0-Traversio_1.0.1")
     #expect(SSHTransportProtocolClient.defaultClientIdentification.rawValue == TraversioRelease.sshIdentificationRawValue)
     #expect(SSHTransportProtocolClient.defaultClientIdentification.protocolVersion == "2.0")
     #expect(SSHTransportProtocolClient.defaultClientIdentification.softwareVersion == TraversioRelease.sshSoftwareVersion)

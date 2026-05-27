@@ -13,7 +13,7 @@ The package provides a native Swift API for common SSH client workflows:
 - local, dynamic, remote, streamlocal, proxy, and ProxyJump forwarding paths
 - explicit host-key trust policy
 - password, keyboard-interactive, public-key, callback-backed, and SSH agent-backed authentication
-- OpenSSH private-key loading, metadata inspection, and key generation
+- OpenSSH private-key loading, OpenSSL-style PEM loading, metadata inspection, and key generation
 
 ## Package Requirements
 
@@ -41,7 +41,7 @@ storage, and operational gating policies above the library.
 dependencies: [
     .package(
         url: "https://github.com/GitSwiftHQ/Traversio.git",
-        from: "1.0.0"
+        from: "1.0.1"
     )
 ]
 ```
@@ -111,6 +111,15 @@ Legacy `ssh-rsa` is disabled by default. Enable
 hop that still requires SHA-1 RSA host-key or userauth compatibility. That
 switch controls built-in RSA keys, callback-backed public-key auth, and
 SSH-agent-backed auth.
+
+`SSHLegacyAlgorithmOptions.sshRSA` controls the SSH algorithm named `ssh-rsa`.
+It is independent of private-key file format support. For user-provided private
+key text, use `SSHAuthenticationMethod.privateKeyPEM(...)` when the app should
+accept OpenSSH private keys, unencrypted PKCS#8 `PRIVATE KEY` PEM containers
+for Ed25519/RSA/ECDSA, unencrypted traditional `EC PRIVATE KEY` PEM containers,
+and traditional `RSA PRIVATE KEY` PEM containers, including supported
+passphrase-encrypted OpenSSL legacy RSA PEM. Encrypted PKCS#8
+`ENCRYPTED PRIVATE KEY` remains outside the `1.0.1` loader.
 
 Unsupported transport algorithms and auth modes are not silently retried. The
 current public surface intentionally defers hostbased auth, security-key auth,
