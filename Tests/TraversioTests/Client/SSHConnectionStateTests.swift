@@ -117,6 +117,24 @@ func closingConnectionClearsLifecycleHandlers() async throws {
 }
 
 @Test
+func connectionInstallsTransportObservationBeforeProtocolTraffic() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let connection = try await makeFixtureConnection(transport: transport)
+
+    #expect(await transport.sendCountBeforeObservationInstall() == 0)
+
+    await connection.close()
+}
+
+@Test
+func connectionStateErrorDescriptionUsesLocalizedErrorText() {
+    #expect(
+        SSHConnectionStateErrorDescription.describe(ConnectionStateLocalizedFailure())
+            == "localized failure"
+    )
+}
+
+@Test
 func failedTransportObservationPublishesLostAndEndsConnectionLifetime() async throws {
     let transport = try makeAuthenticatedConnectionStateFixtureTransport()
     let connection = try await makeFixtureConnection(transport: transport)
@@ -147,12 +165,16 @@ func failedTransportObservationPublishesLostAndEndsConnectionLifetime() async th
 private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport {
     private let base: ConnectionFixtureMockSSHByteStreamTransport
     private var observationHandler: (@Sendable (SSHTransportObservationEvent) -> Void)?
+    private var sendsBeforeObservationInstall = 0
 
     init(base: ConnectionFixtureMockSSHByteStreamTransport) {
         self.base = base
     }
 
     func send(_ bytes: [UInt8], endOfStream: Bool) async throws {
+        if self.observationHandler == nil {
+            self.sendsBeforeObservationInstall += 1
+        }
         try await self.base.send(bytes, endOfStream: endOfStream)
     }
 
@@ -173,6 +195,10 @@ private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport
         self.observationHandler != nil
     }
 
+    func sendCountBeforeObservationInstall() -> Int {
+        self.sendsBeforeObservationInstall
+    }
+
     func close() async {
         await self.base.close()
     }
@@ -187,6 +213,12 @@ private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport
 
     func emitStateChanged(_ state: SSHTransportObservedState, detail: String?) {
         self.observationHandler?(.stateChanged(state: state, detail: detail))
+    }
+}
+
+private struct ConnectionStateLocalizedFailure: LocalizedError, Sendable {
+    var errorDescription: String? {
+        "localized failure"
     }
 }
 

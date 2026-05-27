@@ -211,15 +211,6 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
                     )
                 )
             }
-            .onPathUpdate { _, newPath in
-                box.emit(.networkPathChanged(Self.transportNetworkPath(from: newPath)))
-            }
-            .onViabilityUpdate { _, newIsViable in
-                box.emit(.viabilityChanged(newIsViable))
-            }
-            .onBetterPathUpdate { _, newValue in
-                box.emit(.betterPathAvailable(newValue))
-            }
     }
 
     package func close() async {
@@ -335,7 +326,7 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
     ) -> String? {
         switch state {
         case let .waiting(error), let .failed(error):
-            return String(reflecting: error)
+            return SSHConnectionStateErrorDescription.describe(error)
         case .setup, .preparing, .ready, .cancelled:
             return nil
         @unknown default:

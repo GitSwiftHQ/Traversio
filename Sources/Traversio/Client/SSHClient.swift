@@ -996,6 +996,12 @@ public enum SSHClient {
             transport: transportHandle.transport,
             transportConfiguration: transportConfiguration
         )
+        let transportObservationBuffer = SSHConnectionTransportObservationBuffer()
+        await transportHandle.transport.setObservationHandler { event in
+            Task {
+                await transportObservationBuffer.record(event)
+            }
+        }
         do {
             let setup = try await withOptionalTimeout(
                 nanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds,
@@ -1058,12 +1064,10 @@ public enum SSHClient {
                 client: client,
                 logHandler: logHandler
             )
-            await transportHandle.transport.setObservationHandler { event in
-                Task {
-                    let shouldCloseLifetime = await stateCoordinator.recordTransportObservation(event)
-                    if shouldCloseLifetime {
-                        await lifetime.close()
-                    }
+            await transportObservationBuffer.attach { event in
+                let shouldCloseLifetime = await stateCoordinator.recordTransportObservation(event)
+                if shouldCloseLifetime {
+                    await lifetime.close()
                 }
             }
             await client.setBackgroundFailureHandler { [lifetime] error in

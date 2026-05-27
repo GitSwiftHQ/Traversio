@@ -267,7 +267,7 @@ package actor SSHConnectionStateCoordinator {
             networkPath: self.snapshot.networkPath,
             isTransportViable: self.snapshot.isTransportViable,
             betterPathAvailable: self.snapshot.betterPathAvailable,
-            detail: String(reflecting: error)
+            detail: SSHConnectionStateErrorDescription.describe(error)
         )
         self.emit(.backgroundFailure)
         self.proactiveLivenessProbeTask?.cancel()
@@ -510,6 +510,51 @@ package actor SSHConnectionStateCoordinator {
         case .other:
             return .other
         }
+    }
+}
+
+package actor SSHConnectionTransportObservationBuffer {
+    private var bufferedEvents: [SSHTransportObservationEvent] = []
+    private var handler: (@Sendable (SSHTransportObservationEvent) async -> Void)?
+
+    func record(_ event: SSHTransportObservationEvent) async {
+        if let handler {
+            await handler(event)
+            return
+        }
+
+        self.bufferedEvents.append(event)
+    }
+
+    func attach(
+        _ handler: @escaping @Sendable (SSHTransportObservationEvent) async -> Void
+    ) async {
+        let bufferedEvents = self.bufferedEvents
+        self.bufferedEvents.removeAll(keepingCapacity: false)
+        self.handler = handler
+
+        for event in bufferedEvents {
+            await handler(event)
+        }
+    }
+}
+
+package enum SSHConnectionStateErrorDescription {
+    static func describe(_ error: any Error) -> String {
+        switch error {
+        case let error as LocalizedError:
+            if let description = error.errorDescription {
+                return description
+            }
+        default:
+            break
+        }
+
+        let description = String(describing: error)
+        guard !description.isEmpty else {
+            return String(describing: type(of: error))
+        }
+        return description
     }
 }
 

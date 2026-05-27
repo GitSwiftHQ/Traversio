@@ -434,7 +434,7 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
     ) -> String? {
         switch state {
         case let .waiting(error), let .failed(error):
-            return String(reflecting: error)
+            return SSHConnectionStateErrorDescription.describe(error)
         case .setup, .preparing, .ready, .cancelled:
             return nil
         @unknown default:
