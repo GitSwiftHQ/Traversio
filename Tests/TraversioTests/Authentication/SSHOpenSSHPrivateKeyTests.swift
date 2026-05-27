@@ -57,6 +57,389 @@ func authenticationMethodAutoDetectsOpenSSHPrivateKeyPEM() throws {
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 @Test
+func authenticationMethodPrivateKeyPEMLoadsOpenSSHPrivateKeys() throws {
+    let rsaPrivateKey = try SSHRSAPrivateKey(openSSHPrivateKey: sampleOpenSSHRSAPrivateKeyPEM)
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(sampleOpenSSHEd25519PrivateKeyPEM)
+            == .ed25519PrivateKey(rawRepresentation: sampleOpenSSHEd25519PrivateKeyRawRepresentation)
+    )
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(sampleOpenSSHRSAPrivateKeyPEM)
+            == .rsaPrivateKey(pkcs1DERRepresentation: rsaPrivateKey.pkcs1DERRepresentation)
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsTraditionalUnencryptedRSA() throws {
+    let privateKey = try SSHRSAPrivateKey(openSSHPrivateKey: sampleOpenSSHRSAPrivateKeyPEM)
+    let pem = makePrivateKeyPEM(
+        type: "RSA PRIVATE KEY",
+        derBytes: privateKey.pkcs1DERRepresentation
+    )
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(pem)
+            == .rsaPrivateKey(pkcs1DERRepresentation: privateKey.pkcs1DERRepresentation)
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsOpenSSLStylePKCS8Keys() throws {
+    let rsaPrivateKey = try SSHRSAPrivateKey(openSSHPrivateKey: sampleOpenSSHRSAPrivateKeyPEM)
+    let p256 = try P256.Signing.PrivateKey(rawRepresentation: Data(Array(0x01...0x20)))
+    let ed25519PKCS8PEM = makePKCS8PrivateKeyPEM(
+        algorithmIdentifier: makeAlgorithmIdentifier(oid: oidEd25519),
+        privateKeyBytes: derOctetString(sampleOpenSSHEd25519PrivateKeyRawRepresentation)
+    )
+    let rsaPKCS8PEM = makePKCS8PrivateKeyPEM(
+        algorithmIdentifier: makeAlgorithmIdentifier(oid: oidRSAEncryption, parameters: derNull()),
+        privateKeyBytes: rsaPrivateKey.pkcs1DERRepresentation
+    )
+    let ecdsaPKCS8PEM = makePKCS8PrivateKeyPEM(
+        algorithmIdentifier: makeAlgorithmIdentifier(
+            oid: oidECPublicKey,
+            parameters: derObjectIdentifier(oidPrime256v1)
+        ),
+        privateKeyBytes: makeECPrivateKeyDER(
+            curveOID: oidPrime256v1,
+            rawRepresentation: Array(p256.rawRepresentation)
+        )
+    )
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(ed25519PKCS8PEM)
+            == .ed25519PrivateKey(rawRepresentation: sampleOpenSSHEd25519PrivateKeyRawRepresentation)
+    )
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(rsaPKCS8PEM)
+            == .rsaPrivateKey(pkcs1DERRepresentation: rsaPrivateKey.pkcs1DERRepresentation)
+    )
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(ecdsaPKCS8PEM)
+            == .ecdsaP256PrivateKey(rawRepresentation: Array(p256.rawRepresentation))
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsTraditionalOpenSSHEC() throws {
+    let p256 = try P256.Signing.PrivateKey(rawRepresentation: Data(Array(0x01...0x20)))
+    let pem = makePrivateKeyPEM(
+        type: "EC PRIVATE KEY",
+        derBytes: makeECPrivateKeyDER(
+            curveOID: oidPrime256v1,
+            rawRepresentation: Array(p256.rawRepresentation)
+        )
+    )
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(pem)
+            == .ecdsaP256PrivateKey(rawRepresentation: Array(p256.rawRepresentation))
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsTraditionalRSAFromFile() throws {
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: temporaryDirectory,
+        withIntermediateDirectories: true
+    )
+    defer {
+        try? FileManager.default.removeItem(at: temporaryDirectory)
+    }
+
+    let privateKey = try SSHRSAPrivateKey(openSSHPrivateKey: sampleOpenSSHRSAPrivateKeyPEM)
+    let privateKeyURL = temporaryDirectory.appendingPathComponent("id_rsa_legacy")
+    try makePrivateKeyPEM(
+        type: "RSA PRIVATE KEY",
+        derBytes: privateKey.pkcs1DERRepresentation
+    ).write(to: privateKeyURL, atomically: true, encoding: .utf8)
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(contentsOfFile: privateKeyURL.path)
+            == .rsaPrivateKey(pkcs1DERRepresentation: privateKey.pkcs1DERRepresentation)
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsMalformedTraditionalRSA() throws {
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(
+            """
+            -----BEGIN RSA PRIVATE KEY-----
+            not-base64
+            -----END RSA PRIVATE KEY-----
+            """
+        )
+        Issue.record("Expected malformed traditional RSA PEM to be rejected")
+    } catch {
+        #expect(error as? SSHAuthenticationMethodError == .invalidPrivateKeyPEM)
+    }
+
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(
+            makePrivateKeyPEM(type: "RSA PRIVATE KEY", derBytes: [0x30, 0x00])
+        )
+        Issue.record("Expected invalid traditional RSA DER to be rejected")
+    } catch {
+        #expect(error as? SSHAuthenticationMethodError == .invalidRSAPrivateKeyPEM)
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsEncryptedTraditionalRSA() throws {
+    let method = try SSHAuthenticationMethod.privateKeyPEM(
+        sampleEncryptedTraditionalRSAPrivateKeyPEM,
+        passphrase: sampleEncryptedTraditionalRSAPrivateKeyPassphrase
+    )
+
+    guard case let .rsaPrivateKey(pkcs1DERRepresentation) = method else {
+        Issue.record("Expected encrypted traditional RSA PEM to load as RSA")
+        return
+    }
+
+    let components = try SSHRSAPKCS1DERCodec.parsePrivateKey(pkcs1DERRepresentation)
+    #expect(components.modulus.count >= 128)
+    #expect(components.publicExponent == [0x01, 0x00, 0x01])
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsEncryptedTraditionalRSAWithoutPassphrase() throws {
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(sampleEncryptedTraditionalRSAPrivateKeyPEM)
+        Issue.record("Expected encrypted traditional RSA PEM without a passphrase to be rejected")
+    } catch {
+        #expect(
+            error as? SSHAuthenticationMethodError
+                == .missingLegacyPrivateKeyPEMPassphrase("RSA PRIVATE KEY")
+        )
+        #expect(
+            (error as NSError).localizedDescription
+                .contains("requires a passphrase")
+        )
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsEncryptedTraditionalRSAWithWrongPassphrase() throws {
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(
+            sampleEncryptedTraditionalRSAPrivateKeyPEM,
+            passphrase: "wrong-passphrase"
+        )
+        Issue.record("Expected encrypted traditional RSA PEM with wrong passphrase to be rejected")
+    } catch {
+        #expect(
+            error as? SSHAuthenticationMethodError
+                == .incorrectLegacyPrivateKeyPEMPassphrase("RSA PRIVATE KEY")
+        )
+        #expect(
+            (error as NSError).localizedDescription
+                .contains("could not be decrypted")
+        )
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsUnsupportedEncryptedTraditionalRSACipher() throws {
+    let pem = makePrivateKeyPEM(
+        type: "RSA PRIVATE KEY",
+        headers: [
+            "Proc-Type: 4,ENCRYPTED",
+            "DEK-Info: CAMELLIA-256-CBC,0123456789ABCDEF0123456789ABCDEF",
+        ],
+        derBytes: [0x30, 0x00]
+    )
+
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(pem, passphrase: "ignored")
+        Issue.record("Expected unsupported encrypted traditional RSA PEM cipher to be rejected")
+    } catch {
+        #expect(
+            error as? SSHAuthenticationMethodError
+                == .unsupportedLegacyPrivateKeyPEMCipher("CAMELLIA-256-CBC")
+        )
+        #expect(
+            (error as NSError).localizedDescription
+                .contains("Unsupported encrypted legacy private-key PEM cipher")
+        )
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsEncryptedPKCS8WithReadableError() throws {
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(
+            makePrivateKeyPEM(type: "ENCRYPTED PRIVATE KEY", derBytes: [0x30, 0x00])
+        )
+        Issue.record("Expected encrypted PKCS#8 PEM to be rejected")
+    } catch {
+        #expect(
+            error as? SSHAuthenticationMethodError
+                == .encryptedLegacyPrivateKeyPEMUnsupported("ENCRYPTED PRIVATE KEY")
+        )
+        #expect(
+            (error as NSError).localizedDescription
+                .contains("Encrypted OpenSSL-style private-key PEM is not supported")
+        )
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMRejectsUnsupportedContainerWithReadableError() throws {
+    do {
+        _ = try SSHAuthenticationMethod.privateKeyPEM(
+            makePrivateKeyPEM(type: "DSA PRIVATE KEY", derBytes: [0x30, 0x00])
+        )
+        Issue.record("Expected unsupported legacy DSA PEM to be rejected")
+    } catch {
+        #expect(error as? SSHAuthenticationMethodError == .unsupportedPrivateKeyPEMType("DSA PRIVATE KEY"))
+        #expect((error as NSError).localizedDescription.contains("Unsupported private-key PEM type"))
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodErrorsExposeReadableLocalizedDescriptions() throws {
+    let description = (SSHAuthenticationMethodError.invalidOpenSSHPrivateKeyPEM as NSError)
+        .localizedDescription
+
+    #expect(description.contains("OpenSSH private-key PEM"))
+    #expect(description.contains("SSHAuthenticationMethodError") == false)
+}
+
+#if os(macOS)
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func authenticationMethodPrivateKeyPEMLoadsLocalOpenSSLGeneratedKeys() throws {
+    let version = try runOpenSSL(arguments: ["version"])
+    guard version.exitStatus == 0 else {
+        return
+    }
+
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(
+        at: temporaryDirectory,
+        withIntermediateDirectories: true
+    )
+    defer {
+        try? FileManager.default.removeItem(at: temporaryDirectory)
+    }
+
+    let ed25519URL = temporaryDirectory.appendingPathComponent("id_ed25519_pkcs8.pem")
+    let rsaURL = temporaryDirectory.appendingPathComponent("id_rsa_pkcs8.pem")
+    let encryptedTraditionalRSAURL = temporaryDirectory
+        .appendingPathComponent("id_rsa_traditional_encrypted.pem")
+    let ecdsaPKCS8URL = temporaryDirectory.appendingPathComponent("id_ecdsa_pkcs8.pem")
+    let ecdsaTraditionalURL = temporaryDirectory.appendingPathComponent("id_ecdsa_traditional.pem")
+
+    let generations = [
+        try runOpenSSL(arguments: [
+            "genpkey",
+            "-algorithm",
+            "ed25519",
+            "-out",
+            ed25519URL.path,
+        ]),
+        try runOpenSSL(arguments: [
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:1024",
+            "-out",
+            rsaURL.path,
+        ]),
+        try runOpenSSL(arguments: [
+            "genrsa",
+            "-traditional",
+            "-aes256",
+            "-passout",
+            "pass:traversio-test",
+            "-out",
+            encryptedTraditionalRSAURL.path,
+            "1024",
+        ]),
+        try runOpenSSL(arguments: [
+            "genpkey",
+            "-algorithm",
+            "EC",
+            "-pkeyopt",
+            "ec_paramgen_curve:prime256v1",
+            "-out",
+            ecdsaPKCS8URL.path,
+        ]),
+        try runOpenSSL(arguments: [
+            "ecparam",
+            "-name",
+            "prime256v1",
+            "-genkey",
+            "-noout",
+            "-out",
+            ecdsaTraditionalURL.path,
+        ]),
+    ]
+
+    guard generations.allSatisfy({ $0.exitStatus == 0 }) else {
+        return
+    }
+
+    guard case let .ed25519PrivateKey(ed25519Raw) = try SSHAuthenticationMethod.privateKeyPEM(
+        contentsOfFile: ed25519URL.path
+    ) else {
+        Issue.record("Expected OpenSSL Ed25519 PKCS#8 key to load as Ed25519")
+        return
+    }
+    #expect(ed25519Raw.count == 32)
+
+    guard case let .rsaPrivateKey(pkcs1DERRepresentation) = try SSHAuthenticationMethod.privateKeyPEM(
+        contentsOfFile: rsaURL.path
+    ) else {
+        Issue.record("Expected OpenSSL RSA PKCS#8 key to load as RSA")
+        return
+    }
+    #expect((try SSHRSAPKCS1DERCodec.parsePrivateKey(pkcs1DERRepresentation)).modulus.count >= 128)
+
+    guard case let .rsaPrivateKey(encryptedPKCS1DERRepresentation) = try SSHAuthenticationMethod
+        .privateKeyPEM(
+            contentsOfFile: encryptedTraditionalRSAURL.path,
+            passphrase: "traversio-test"
+        ) else {
+        Issue.record("Expected OpenSSL encrypted traditional RSA key to load as RSA")
+        return
+    }
+    #expect(
+        (try SSHRSAPKCS1DERCodec.parsePrivateKey(encryptedPKCS1DERRepresentation))
+            .modulus.count >= 128
+    )
+
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(contentsOfFile: ecdsaPKCS8URL.path).ecdsaCurveName
+            == "nistp256"
+    )
+    #expect(
+        try SSHAuthenticationMethod.privateKeyPEM(contentsOfFile: ecdsaTraditionalURL.path).ecdsaCurveName
+            == "nistp256"
+    )
+}
+#endif
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
 func openSSHPrivateKeyInfoParsesUnencryptedEnvelopeMetadata() throws {
     let info = try SSHOpenSSHPrivateKeyInfo.parse(sampleOpenSSHEd25519PrivateKeyPEM)
 
@@ -599,6 +982,29 @@ gy5hnGfCLzLruzYCkAAAAAAQID
 
 private let sampleEncryptedOpenSSHPrivateKeyPassphrase = "traversio-pass"
 
+private let sampleEncryptedTraditionalRSAPrivateKeyPassphrase = "traversio-legacy-rsa"
+
+private let sampleEncryptedTraditionalRSAPrivateKeyPEM = """
+-----BEGIN RSA PRIVATE KEY-----
+Proc-Type: 4,ENCRYPTED
+DEK-Info: AES-256-CBC,D4067B3EBB5DDCCCDE5F665C7FDE1314
+
+vIyKYpcWrfPiNXKuDexCr6a5HDgO/CI+Wuek50kkTeHlk3SIcUoIvh1damSBgYj1
+WpjAu7wTS9oOVngKb7DhSSvYWcrVhTFxXxpddxcdQj7egqZPaN9sr4pF56ZE770W
+cBW+nlTr3FuxAo3MKm2WewI0vAcKp7OcvnjUdpA6fN5jawEWmmtcWiuz/9TA7cK7
+etuM0Lt9i1t1RcyLNNJMwHtpuVjxdr20C30zem5NIsAri05sd7TWHvxMZADURziP
+YbsrWQFPjTiugGoHuS8zo+bwY7WB+GnzvL8I/AnI/OWmUhvVWdHSvnYTiJHC2gtP
+9WR0q4jVcNQMBolJMNtvbG+xTD0AYvasRbZ9dkBpJVVooqFWWkIY9VGlsbGqw8BX
+o/72RwxAxLuj8RtgeQtTFG0k3uyFpdM9h7coro2ewhdvdRB1APIaMYavjvve6P7f
+6pW1BZ4AAFSucXoI+t/DuKSLXWzSOum3dRsF6pBeBQEwBDbE2bRk1tt+HrMy1969
+xgzHaSdi4oiRBpe0nK2Il5LnjmkdGPWWbmTRQfION8e+7MTQip7PvyUASIDiti18
+x+4MURsIcWB1wGChfauBHCaeYWn+zx1fMZN6qpgHWbsIkPECOFOG0GQ6sKV8+pNg
+GA/+ATjaHdZtaQ4t2CgMpVRn4MbZk47lQnhWJR6aWeG/sRGhc/KcqwwVQD4S8gqe
+WUnTrV7AzCe0jKS7d37gZOKq6ah2qvJZIHLVPzKEWaBhc8NLzov9hsJob/oTZnHD
+yvzNLS5RhPrrmvuNYuwnIJtQRi/dFPIzLyPVwMVDSXsCQxWDHbWLI1bnnSzUgU77
+-----END RSA PRIVATE KEY-----
+"""
+
 private let sampleEncryptedOpenSSHEd25519PrivateKeyPEM = """
 -----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABDmtH5qn5
@@ -751,6 +1157,171 @@ private func makeOpenSSHPrivateKeyPEM(encodedPayload: [UInt8]) -> String {
     \(lines.joined(separator: "\n"))
     -----END OPENSSH PRIVATE KEY-----
     """
+}
+
+private func makePrivateKeyPEM(
+    type: String,
+    headers: [String] = [],
+    derBytes: [UInt8]
+) -> String {
+    let encoded = Data(derBytes).base64EncodedString()
+    let lines = stride(from: 0, to: encoded.count, by: 64).map { startIndex -> String in
+        let start = encoded.index(encoded.startIndex, offsetBy: startIndex)
+        let end = encoded.index(start, offsetBy: min(64, encoded.count - startIndex))
+        return String(encoded[start..<end])
+    }
+    let payload = (headers + lines).joined(separator: "\n")
+
+    return """
+    -----BEGIN \(type)-----
+    \(payload)
+    -----END \(type)-----
+    """
+}
+
+private extension SSHAuthenticationMethod {
+    var ecdsaCurveName: String? {
+        switch self {
+        case .ecdsaP256PrivateKey:
+            return "nistp256"
+        case .ecdsaP384PrivateKey:
+            return "nistp384"
+        case .ecdsaP521PrivateKey:
+            return "nistp521"
+        case .password,
+             .passwordWithChangeResponse,
+             .ed25519PrivateKey,
+             .rsaPrivateKey,
+             .publicKey,
+             .keyboardInteractive:
+            return nil
+        }
+    }
+}
+
+#if os(macOS)
+private struct OpenSSLResult {
+    let exitStatus: Int32
+}
+
+private func runOpenSSL(arguments: [String]) throws -> OpenSSLResult {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["openssl"] + arguments
+    process.standardOutput = Pipe()
+    process.standardError = Pipe()
+
+    try process.run()
+    process.waitUntilExit()
+
+    return OpenSSLResult(exitStatus: process.terminationStatus)
+}
+#endif
+
+private let oidRSAEncryption: [UInt64] = [1, 2, 840, 113_549, 1, 1, 1]
+private let oidEd25519: [UInt64] = [1, 3, 101, 112]
+private let oidECPublicKey: [UInt64] = [1, 2, 840, 10_045, 2, 1]
+private let oidPrime256v1: [UInt64] = [1, 2, 840, 10_045, 3, 1, 7]
+
+private func makePKCS8PrivateKeyPEM(
+    algorithmIdentifier: [UInt8],
+    privateKeyBytes: [UInt8]
+) -> String {
+    makePrivateKeyPEM(
+        type: "PRIVATE KEY",
+        derBytes: derSequence([
+            derInteger(0),
+            algorithmIdentifier,
+            derOctetString(privateKeyBytes),
+        ])
+    )
+}
+
+private func makeAlgorithmIdentifier(
+    oid: [UInt64],
+    parameters: [UInt8] = []
+) -> [UInt8] {
+    derSequence([derObjectIdentifier(oid), parameters])
+}
+
+private func makeECPrivateKeyDER(
+    curveOID: [UInt64],
+    rawRepresentation: [UInt8]
+) -> [UInt8] {
+    derSequence([
+        derInteger(1),
+        derOctetString(rawRepresentation),
+        derExplicit(tag: 0xa0, derObjectIdentifier(curveOID)),
+    ])
+}
+
+private func derSequence(_ elements: [[UInt8]]) -> [UInt8] {
+    derElement(tag: 0x30, payload: elements.flatMap { $0 })
+}
+
+private func derInteger(_ value: Int) -> [UInt8] {
+    precondition(value >= 0)
+    var value = value
+    var bytes: [UInt8] = []
+    repeat {
+        bytes.insert(UInt8(value & 0xff), at: 0)
+        value >>= 8
+    } while value > 0
+    if bytes[0] & 0x80 == 0x80 {
+        bytes.insert(0, at: 0)
+    }
+    return derElement(tag: 0x02, payload: bytes)
+}
+
+private func derOctetString(_ bytes: [UInt8]) -> [UInt8] {
+    derElement(tag: 0x04, payload: bytes)
+}
+
+private func derNull() -> [UInt8] {
+    derElement(tag: 0x05, payload: [])
+}
+
+private func derObjectIdentifier(_ oid: [UInt64]) -> [UInt8] {
+    precondition(oid.count >= 2)
+    var payload = [UInt8(oid[0] * 40 + oid[1])]
+    for component in oid.dropFirst(2) {
+        payload += derBase128(component)
+    }
+    return derElement(tag: 0x06, payload: payload)
+}
+
+private func derExplicit(tag: UInt8, _ payload: [UInt8]) -> [UInt8] {
+    derElement(tag: tag, payload: payload)
+}
+
+private func derElement(tag: UInt8, payload: [UInt8]) -> [UInt8] {
+    [tag] + derLength(payload.count) + payload
+}
+
+private func derLength(_ length: Int) -> [UInt8] {
+    precondition(length >= 0)
+    if length < 0x80 {
+        return [UInt8(length)]
+    }
+
+    var value = length
+    var bytes: [UInt8] = []
+    while value > 0 {
+        bytes.insert(UInt8(value & 0xff), at: 0)
+        value >>= 8
+    }
+    return [0x80 | UInt8(bytes.count)] + bytes
+}
+
+private func derBase128(_ value: UInt64) -> [UInt8] {
+    var value = value
+    var bytes = [UInt8(value & 0x7f)]
+    value >>= 7
+    while value > 0 {
+        bytes.insert(UInt8(value & 0x7f) | 0x80, at: 0)
+        value >>= 7
+    }
+    return bytes
 }
 
 private func makeOpenSSHECDSAPrivateKeyPEM(

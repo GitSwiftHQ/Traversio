@@ -9,12 +9,26 @@ import Foundation
 /// Errors raised while parsing authentication inputs such as OpenSSH private
 /// keys or keyboard-interactive responses.
 public enum SSHAuthenticationMethodError: Error, Equatable, Sendable {
+    /// Invalid private key PEM.
+    case invalidPrivateKeyPEM
     /// Invalid OpenSSH Private Key PEM.
     case invalidOpenSSHPrivateKeyPEM
     /// Invalid OpenSSH Private Key.
     case invalidOpenSSHPrivateKey
+    /// Invalid RSA Private Key PEM.
+    case invalidRSAPrivateKeyPEM
     /// Invalid OpenSSHRSA Key Bit Count.
     case invalidOpenSSHRSAKeyBitCount(Int)
+    /// Unsupported private key PEM type.
+    case unsupportedPrivateKeyPEMType(String)
+    /// Encrypted legacy private key PEM is unsupported.
+    case encryptedLegacyPrivateKeyPEMUnsupported(String)
+    /// Missing encrypted legacy private key PEM passphrase.
+    case missingLegacyPrivateKeyPEMPassphrase(String)
+    /// Incorrect encrypted legacy private key PEM passphrase.
+    case incorrectLegacyPrivateKeyPEMPassphrase(String)
+    /// Unsupported encrypted legacy private key PEM cipher.
+    case unsupportedLegacyPrivateKeyPEMCipher(String)
     /// Missing OpenSSH Private Key Passphrase.
     case missingOpenSSHPrivateKeyPassphrase
     /// Incorrect OpenSSH Private Key Passphrase.
@@ -34,6 +48,449 @@ public enum SSHAuthenticationMethodError: Error, Equatable, Sendable {
     /// Empty public key Authentication public key.
     case emptyPublicKeyAuthenticationPublicKey
 }
+
+extension SSHAuthenticationMethodError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidPrivateKeyPEM:
+            return "The private key PEM is malformed."
+        case .invalidOpenSSHPrivateKeyPEM:
+            return "The text is not a valid OpenSSH private-key PEM. Expected -----BEGIN OPENSSH PRIVATE KEY-----."
+        case .invalidOpenSSHPrivateKey:
+            return "The OpenSSH private key is malformed or does not match its public key."
+        case .invalidRSAPrivateKeyPEM:
+            return "The RSA private-key PEM is malformed or does not contain a valid PKCS#1 RSA private key."
+        case let .invalidOpenSSHRSAKeyBitCount(bitCount):
+            return "The OpenSSH RSA private-key bit count is unsupported: \(bitCount)."
+        case let .unsupportedPrivateKeyPEMType(type):
+            return "Unsupported private-key PEM type: \(type). Supported types are OPENSSH PRIVATE KEY, unencrypted PRIVATE KEY, RSA PRIVATE KEY, and unencrypted EC PRIVATE KEY."
+        case let .encryptedLegacyPrivateKeyPEMUnsupported(type):
+            return "Encrypted OpenSSL-style private-key PEM is not supported for \(type). Traversio supports passphrases for traditional RSA PRIVATE KEY PEM; convert this container to encrypted OpenSSH format or provide an unencrypted supported PEM."
+        case let .missingLegacyPrivateKeyPEMPassphrase(type):
+            return "The encrypted legacy \(type) PEM requires a passphrase."
+        case let .incorrectLegacyPrivateKeyPEMPassphrase(type):
+            return "The encrypted legacy \(type) PEM could not be decrypted with the supplied passphrase, or the decrypted key data is malformed."
+        case let .unsupportedLegacyPrivateKeyPEMCipher(cipher):
+            return "Unsupported encrypted legacy private-key PEM cipher: \(cipher)."
+        case .missingOpenSSHPrivateKeyPassphrase:
+            return "The encrypted OpenSSH private key requires a passphrase."
+        case .incorrectOpenSSHPrivateKeyPassphrase:
+            return "The OpenSSH private-key passphrase is incorrect."
+        case let .unsupportedOpenSSHPrivateKeyCipher(cipher):
+            return "Unsupported OpenSSH private-key cipher: \(cipher)."
+        case let .unsupportedOpenSSHPrivateKeyKDF(kdf):
+            return "Unsupported OpenSSH private-key KDF: \(kdf)."
+        case let .unsupportedOpenSSHPrivateKeyCount(count):
+            return "Unsupported OpenSSH private-key count: \(count). Traversio expects one private key per PEM."
+        case let .unsupportedOpenSSHPrivateKeyType(type):
+            return "Unsupported OpenSSH private-key type: \(type)."
+        case let .invalidKeyboardInteractiveResponseCount(expected, received):
+            return "Invalid keyboard-interactive response count: expected \(expected), received \(received)."
+        case .emptyPublicKeyAuthenticationAlgorithmList:
+            return "The public-key authentication algorithm list is empty."
+        case .emptyPublicKeyAuthenticationPublicKey:
+            return "The public-key authentication key is empty."
+        }
+    }
+}
+
+private struct SSHPrivateKeyPEMBlock {
+    let type: String
+    let headers: [String]
+    let derBytes: [UInt8]
+
+    var isLegacyEncrypted: Bool {
+        self.headers.contains { header in
+            header.lowercased().hasPrefix("proc-type:")
+                && header.localizedCaseInsensitiveContains("encrypted")
+        } || self.headers.contains { header in
+            header.lowercased().hasPrefix("dek-info:")
+        }
+    }
+}
+
+private enum SSHPrivateKeyPEMParser {
+    static func firstType(in pem: String) -> String? {
+        self.normalizedLines(in: pem).first.flatMap(self.type(fromBeginMarker:))
+    }
+
+    static func parse(_ pem: String) throws -> SSHPrivateKeyPEMBlock {
+        let lines = self.normalizedLines(in: pem)
+        guard lines.count >= 3,
+              let type = self.type(fromBeginMarker: lines[0]),
+              lines.last == self.endMarker(for: type) else {
+            throw SSHAuthenticationMethodError.invalidPrivateKeyPEM
+        }
+
+        let payloadLines = Array(lines.dropFirst().dropLast())
+        var headerLines: [String] = []
+        var bodyStartIndex = payloadLines.startIndex
+        while bodyStartIndex < payloadLines.endIndex,
+              payloadLines[bodyStartIndex].contains(":") {
+            headerLines.append(payloadLines[bodyStartIndex])
+            bodyStartIndex = payloadLines.index(after: bodyStartIndex)
+        }
+
+        let bodyLines = payloadLines[bodyStartIndex...]
+        guard bodyLines.isEmpty == false,
+              bodyLines.allSatisfy({ !$0.contains(":") }) else {
+            throw SSHAuthenticationMethodError.invalidPrivateKeyPEM
+        }
+
+        guard let der = Data(base64Encoded: bodyLines.joined()) else {
+            throw SSHAuthenticationMethodError.invalidPrivateKeyPEM
+        }
+
+        return SSHPrivateKeyPEMBlock(
+            type: type,
+            headers: headerLines,
+            derBytes: Array(der)
+        )
+    }
+
+    private static func normalizedLines(in pem: String) -> [String] {
+        pem
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+    }
+
+    private static func type(fromBeginMarker marker: String) -> String? {
+        let prefix = "-----BEGIN "
+        let suffix = "-----"
+        guard marker.hasPrefix(prefix), marker.hasSuffix(suffix) else {
+            return nil
+        }
+
+        return String(marker.dropFirst(prefix.count).dropLast(suffix.count))
+    }
+
+    private static func endMarker(for type: String) -> String {
+        "-----END \(type)-----"
+    }
+}
+
+private enum SSHPrivateKeyDERError: Error {
+    case invalidDER
+}
+
+private struct SSHPrivateKeyDERReader {
+    private let bytes: [UInt8]
+    private var readIndex: Int = 0
+
+    init(bytes: [UInt8]) {
+        self.bytes = bytes
+    }
+
+    var isAtEnd: Bool {
+        self.readIndex == self.bytes.count
+    }
+
+    var nextTag: UInt8? {
+        guard self.readIndex < self.bytes.count else {
+            return nil
+        }
+        return self.bytes[self.readIndex]
+    }
+
+    mutating func readElement(tag expectedTag: UInt8) throws -> [UInt8] {
+        let actualTag = try self.readByte()
+        guard actualTag == expectedTag else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let length = try self.readLength()
+        return try self.readBytes(count: length)
+    }
+
+    mutating func readIntegerValue() throws -> Int {
+        let bytes = try self.readElement(tag: 0x02)
+        guard bytes.isEmpty == false,
+              bytes.count <= MemoryLayout<Int>.size,
+              bytes[0] & 0x80 == 0 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        return bytes.reduce(0) { ($0 << 8) | Int($1) }
+    }
+
+    mutating func readObjectIdentifier() throws -> String {
+        let bytes = try self.readElement(tag: 0x06)
+        guard let first = bytes.first else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        var components: [UInt64] = [
+            UInt64(first / 40),
+            UInt64(first % 40),
+        ]
+        var value: UInt64 = 0
+        var hasContinuation = false
+
+        for byte in bytes.dropFirst() {
+            hasContinuation = true
+            value = (value << 7) | UInt64(byte & 0x7f)
+            if byte & 0x80 == 0 {
+                components.append(value)
+                value = 0
+                hasContinuation = false
+            }
+        }
+
+        guard !hasContinuation else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+        return components.map(String.init).joined(separator: ".")
+    }
+
+    mutating func readOptionalNull() throws {
+        guard self.nextTag == 0x05 else {
+            return
+        }
+        let nullPayload = try self.readElement(tag: 0x05)
+        guard nullPayload.isEmpty else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+    }
+
+    private mutating func readByte() throws -> UInt8 {
+        let bytes = try self.readBytes(count: 1)
+        return bytes[0]
+    }
+
+    private mutating func readLength() throws -> Int {
+        let first = try self.readByte()
+        if first & 0x80 == 0 {
+            return Int(first)
+        }
+
+        let byteCount = Int(first & 0x7f)
+        guard byteCount > 0, byteCount <= 4 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let bytes = try self.readBytes(count: byteCount)
+        guard bytes.first != 0 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+        return bytes.reduce(0) { ($0 << 8) | Int($1) }
+    }
+
+    private mutating func readBytes(count: Int) throws -> [UInt8] {
+        guard count >= 0,
+              self.readIndex + count <= self.bytes.count else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let result = Array(self.bytes[self.readIndex..<self.readIndex + count])
+        self.readIndex += count
+        return result
+    }
+}
+
+private enum SSHPrivateKeyPKCS8Parser {
+    private static let rsaEncryptionOID = "1.2.840.113549.1.1.1"
+    private static let ecPublicKeyOID = "1.2.840.10045.2.1"
+    private static let ed25519OID = "1.3.101.112"
+    private static let p256OID = "1.2.840.10045.3.1.7"
+    private static let p384OID = "1.3.132.0.34"
+    private static let p521OID = "1.3.132.0.35"
+
+    private enum Algorithm: Equatable {
+        case rsa
+        case ed25519
+        case ecdsa(SSHECDSACurve)
+    }
+
+    static func authenticationMethod(derBytes: [UInt8]) throws -> SSHAuthenticationMethod {
+        let parsed = try self.parsePrivateKeyInfo(derBytes)
+        switch parsed.algorithm {
+        case .rsa:
+            let privateKey = try SSHRSAPrivateKey(
+                pkcs1DERRepresentation: parsed.privateKeyBytes
+            )
+            return .rsaPrivateKey(
+                pkcs1DERRepresentation: privateKey.pkcs1DERRepresentation
+            )
+        case .ed25519:
+            return .ed25519PrivateKey(
+                rawRepresentation: try self.parseEd25519Seed(parsed.privateKeyBytes)
+            )
+        case let .ecdsa(curve):
+            return try self.authenticationMethod(
+                ecPrivateKeyDER: parsed.privateKeyBytes,
+                expectedCurve: curve
+            )
+        }
+    }
+
+    static func authenticationMethod(
+        ecPrivateKeyDER: [UInt8],
+        expectedCurve: SSHECDSACurve?
+    ) throws -> SSHAuthenticationMethod {
+        let parsed = try self.parseECPrivateKey(ecPrivateKeyDER)
+        let curve = try self.requireCurve(parsed.curve ?? expectedCurve)
+        if let expectedCurve, parsed.curve.map({ $0 != expectedCurve }) ?? false {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let rawRepresentation = try self.normalizedECPrivateScalar(
+            parsed.privateScalar,
+            curve: curve
+        )
+        switch SSHECDSAPrivateKey(curve: curve, rawRepresentation: rawRepresentation) {
+        case let .nistp256(rawRepresentation):
+            _ = try P256.Signing.PrivateKey(rawRepresentation: Data(rawRepresentation))
+            return .ecdsaP256PrivateKey(rawRepresentation: rawRepresentation)
+        case let .nistp384(rawRepresentation):
+            _ = try P384.Signing.PrivateKey(rawRepresentation: Data(rawRepresentation))
+            return .ecdsaP384PrivateKey(rawRepresentation: rawRepresentation)
+        case let .nistp521(rawRepresentation):
+            _ = try P521.Signing.PrivateKey(rawRepresentation: Data(rawRepresentation))
+            return .ecdsaP521PrivateKey(rawRepresentation: rawRepresentation)
+        }
+    }
+
+    private static func parsePrivateKeyInfo(
+        _ derBytes: [UInt8]
+    ) throws -> (algorithm: Algorithm, privateKeyBytes: [UInt8]) {
+        var outerReader = SSHPrivateKeyDERReader(bytes: derBytes)
+        var reader = SSHPrivateKeyDERReader(
+            bytes: try outerReader.readElement(tag: 0x30)
+        )
+        guard outerReader.isAtEnd,
+              try reader.readIntegerValue() == 0 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let algorithm = try self.parseAlgorithmIdentifier(
+            try reader.readElement(tag: 0x30)
+        )
+        let privateKeyBytes = try reader.readElement(tag: 0x04)
+        while reader.nextTag == 0xa0 || reader.nextTag == 0xa1 {
+            _ = try reader.readElement(tag: reader.nextTag!)
+        }
+        guard reader.isAtEnd else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        return (algorithm, privateKeyBytes)
+    }
+
+    private static func parseAlgorithmIdentifier(_ bytes: [UInt8]) throws -> Algorithm {
+        var reader = SSHPrivateKeyDERReader(bytes: bytes)
+        let oid = try reader.readObjectIdentifier()
+
+        switch oid {
+        case Self.rsaEncryptionOID:
+            try reader.readOptionalNull()
+            guard reader.isAtEnd else {
+                throw SSHPrivateKeyDERError.invalidDER
+            }
+            return .rsa
+        case Self.ed25519OID:
+            guard reader.isAtEnd else {
+                throw SSHPrivateKeyDERError.invalidDER
+            }
+            return .ed25519
+        case Self.ecPublicKeyOID:
+            let curveOID = try reader.readObjectIdentifier()
+            guard reader.isAtEnd else {
+                throw SSHPrivateKeyDERError.invalidDER
+            }
+            return .ecdsa(try self.curve(for: curveOID))
+        default:
+            throw SSHAuthenticationMethodError.unsupportedPrivateKeyPEMType("PRIVATE KEY")
+        }
+    }
+
+    private static func parseEd25519Seed(_ privateKeyBytes: [UInt8]) throws -> [UInt8] {
+        var reader = SSHPrivateKeyDERReader(bytes: privateKeyBytes)
+        if let seed = try? reader.readElement(tag: 0x04),
+           reader.isAtEnd,
+           seed.count == 32 {
+            return seed
+        }
+
+        guard privateKeyBytes.count == 32 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+        return privateKeyBytes
+    }
+
+    private static func parseECPrivateKey(
+        _ derBytes: [UInt8]
+    ) throws -> (privateScalar: [UInt8], curve: SSHECDSACurve?) {
+        var outerReader = SSHPrivateKeyDERReader(bytes: derBytes)
+        var reader = SSHPrivateKeyDERReader(
+            bytes: try outerReader.readElement(tag: 0x30)
+        )
+        guard outerReader.isAtEnd,
+              try reader.readIntegerValue() == 1 else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        let privateScalar = try reader.readElement(tag: 0x04)
+        var curve: SSHECDSACurve?
+        while !reader.isAtEnd {
+            switch reader.nextTag {
+            case 0xa0:
+                curve = try self.parseExplicitECCurveParameters(
+                    try reader.readElement(tag: 0xa0)
+                )
+            case 0xa1:
+                _ = try reader.readElement(tag: 0xa1)
+            default:
+                throw SSHPrivateKeyDERError.invalidDER
+            }
+        }
+
+        return (privateScalar, curve)
+    }
+
+    private static func parseExplicitECCurveParameters(_ bytes: [UInt8]) throws -> SSHECDSACurve {
+        var reader = SSHPrivateKeyDERReader(bytes: bytes)
+        let oid = try reader.readObjectIdentifier()
+        guard reader.isAtEnd else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+        return try self.curve(for: oid)
+    }
+
+    private static func requireCurve(_ curve: SSHECDSACurve?) throws -> SSHECDSACurve {
+        guard let curve else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+        return curve
+    }
+
+    private static func curve(for oid: String) throws -> SSHECDSACurve {
+        switch oid {
+        case Self.p256OID:
+            return .nistp256
+        case Self.p384OID:
+            return .nistp384
+        case Self.p521OID:
+            return .nistp521
+        default:
+            throw SSHAuthenticationMethodError.unsupportedPrivateKeyPEMType("EC PRIVATE KEY")
+        }
+    }
+
+    private static func normalizedECPrivateScalar(
+        _ scalar: [UInt8],
+        curve: SSHECDSACurve
+    ) throws -> [UInt8] {
+        let magnitude = Array(scalar.drop { $0 == 0 })
+        guard magnitude.isEmpty == false,
+              magnitude.count <= curve.coordinateByteCount else {
+            throw SSHPrivateKeyDERError.invalidDER
+        }
+
+        return Array(repeating: 0, count: curve.coordinateByteCount - magnitude.count) + magnitude
+    }
+}
+
 private enum SSHOpenSSHPrivateKeyParser {
     private struct ParsedPrivateKeyEnvelope {
         let publicKeyBlob: [UInt8]
@@ -533,6 +990,101 @@ extension SSHRSAPrivateKey {
 }
 
 public extension SSHAuthenticationMethod {
+    /// Parses a private-key PEM string and returns the matching authentication
+    /// method.
+    ///
+    /// This broad loader accepts OpenSSH `openssh-key-v1` private keys and
+    /// OpenSSL-style PKCS#8 Ed25519/RSA/ECDSA, traditional RSA, and
+    /// traditional EC private keys. Traditional RSA PEM may be unencrypted or
+    /// passphrase-encrypted with a supported OpenSSL legacy PEM cipher.
+    static func privateKeyPEM(
+        _ pem: String,
+        passphrase: String? = nil
+    ) throws -> SSHAuthenticationMethod {
+        if SSHPrivateKeyPEMParser.firstType(in: pem) == "OPENSSH PRIVATE KEY" {
+            return try .openSSHPrivateKey(pem, passphrase: passphrase)
+        }
+
+        let block = try SSHPrivateKeyPEMParser.parse(pem)
+        switch block.type {
+        case "PRIVATE KEY":
+            do {
+                return try SSHPrivateKeyPKCS8Parser.authenticationMethod(
+                    derBytes: block.derBytes
+                )
+            } catch let error as SSHAuthenticationMethodError {
+                throw error
+            } catch {
+                throw SSHAuthenticationMethodError.invalidPrivateKeyPEM
+            }
+        case "ENCRYPTED PRIVATE KEY":
+            throw SSHAuthenticationMethodError.encryptedLegacyPrivateKeyPEMUnsupported(
+                block.type
+            )
+        case "RSA PRIVATE KEY":
+            let derBytes: [UInt8]
+            let wasEncrypted = block.isLegacyEncrypted
+            if wasEncrypted {
+                derBytes = try SSHLegacyPrivateKeyPEMDecryption.decrypt(
+                    encryptedDERBytes: block.derBytes,
+                    headers: block.headers,
+                    passphrase: passphrase,
+                    pemType: block.type
+                )
+            } else {
+                derBytes = block.derBytes
+            }
+            do {
+                let privateKey = try SSHRSAPrivateKey(
+                    pkcs1DERRepresentation: derBytes
+                )
+                return .rsaPrivateKey(
+                    pkcs1DERRepresentation: privateKey.pkcs1DERRepresentation
+                )
+            } catch {
+                if wasEncrypted {
+                    throw SSHAuthenticationMethodError.incorrectLegacyPrivateKeyPEMPassphrase(
+                        block.type
+                    )
+                }
+                throw SSHAuthenticationMethodError.invalidRSAPrivateKeyPEM
+            }
+        case "EC PRIVATE KEY":
+            guard !block.isLegacyEncrypted else {
+                throw SSHAuthenticationMethodError.encryptedLegacyPrivateKeyPEMUnsupported(
+                    block.type
+                )
+            }
+            do {
+                return try SSHPrivateKeyPKCS8Parser.authenticationMethod(
+                    ecPrivateKeyDER: block.derBytes,
+                    expectedCurve: nil
+                )
+            } catch let error as SSHAuthenticationMethodError {
+                throw error
+            } catch {
+                throw SSHAuthenticationMethodError.invalidPrivateKeyPEM
+            }
+        case let type:
+            throw SSHAuthenticationMethodError.unsupportedPrivateKeyPEMType(type)
+        }
+    }
+
+    /// Loads a private-key PEM file and returns the matching authentication
+    /// method.
+    ///
+    /// This broad loader accepts OpenSSH `openssh-key-v1` private keys and
+    /// OpenSSH private keys, OpenSSL-style PKCS#8 keys, traditional RSA keys,
+    /// and traditional EC keys. Traditional RSA PEM may be unencrypted or
+    /// passphrase-encrypted with a supported OpenSSL legacy PEM cipher.
+    static func privateKeyPEM(
+        contentsOfFile path: String,
+        passphrase: String? = nil
+    ) throws -> SSHAuthenticationMethod {
+        let pem = try String(contentsOfFile: path, encoding: .utf8)
+        return try .privateKeyPEM(pem, passphrase: passphrase)
+    }
+
     /// Parses an OpenSSH private key string and returns the matching
     /// authentication method.
     ///
