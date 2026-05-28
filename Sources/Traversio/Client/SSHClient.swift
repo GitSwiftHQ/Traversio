@@ -133,6 +133,14 @@ public struct SSHConnection: Sendable {
         await self.client.hasBackgroundFailureHandler()
     }
 
+    func lifecycleRetainProbe() -> SSHConnectionLifecycleRetainProbe {
+        SSHConnectionLifecycleRetainProbe(
+            client: self.client,
+            lifetime: self.lifetime,
+            stateCoordinator: self.stateCoordinator
+        )
+    }
+
     /// Returns the latest connection state snapshot.
     public func currentState() async -> SSHConnectionStateSnapshot {
         if let stateCoordinator {
@@ -476,6 +484,22 @@ public struct SSHConnection: Sendable {
             metadata: self.metadata,
             logHandler: self.logHandler
         )
+    }
+}
+
+final class SSHConnectionLifecycleRetainProbe {
+    weak var client: SSHTransportProtocolClient?
+    weak var lifetime: SSHConnectionLifetime?
+    weak var stateCoordinator: SSHConnectionStateCoordinator?
+
+    init(
+        client: SSHTransportProtocolClient,
+        lifetime: SSHConnectionLifetime,
+        stateCoordinator: SSHConnectionStateCoordinator?
+    ) {
+        self.client = client
+        self.lifetime = lifetime
+        self.stateCoordinator = stateCoordinator
     }
 }
 
@@ -1064,15 +1088,19 @@ public enum SSHClient {
                 client: client,
                 logHandler: logHandler
             )
-            await transportObservationBuffer.attach { event in
+            await transportObservationBuffer.attach { [weak lifetime, weak stateCoordinator] event in
+                guard let stateCoordinator else {
+                    return
+                }
+
                 let shouldCloseLifetime = await stateCoordinator.recordTransportObservation(event)
                 if shouldCloseLifetime {
-                    await lifetime.close()
+                    await lifetime?.close()
                 }
             }
-            await client.setBackgroundFailureHandler { [lifetime] error in
-                await stateCoordinator.recordBackgroundFailure(error)
-                await lifetime.close()
+            await client.setBackgroundFailureHandler { [weak lifetime, weak stateCoordinator] error in
+                await stateCoordinator?.recordBackgroundFailure(error)
+                await lifetime?.close()
             }
             let connection = SSHConnection(
                 metadata: metadata,
@@ -1320,8 +1348,11 @@ public enum SSHClient {
         gracefulCloseTimeoutNanoseconds: UInt64
     ) async {
         await transportHandle.transport.setObservationHandler(nil)
+        let hasPendingBackgroundTransportFailure =
+            await client.hasPendingBackgroundTransportFailure()
+        await client.prepareForTransportLifecycleClose()
 
-        if await !client.hasPendingBackgroundTransportFailure() {
+        if !hasPendingBackgroundTransportFailure {
             let disconnectTask = Task {
                 await client.disconnect()
             }

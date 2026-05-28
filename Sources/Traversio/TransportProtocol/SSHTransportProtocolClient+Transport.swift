@@ -75,9 +75,7 @@ extension SSHTransportProtocolClient {
         description: String = "connection closed by client",
         languageTag: String = ""
     ) async {
-        self.backgroundFailureHandler = nil
-        self.cancelIdleRekeyTask()
-        self.cancelKeepaliveTask()
+        self.prepareForTransportLifecycleClose()
         guard self.versionExchange != nil else {
             return
         }
@@ -106,11 +104,19 @@ extension SSHTransportProtocolClient {
         self.cancelKeepaliveTask()
     }
 
-    func abortTransportLifecycle() {
+    func prepareForTransportLifecycleClose(
+        preservePendingBackgroundFailure: Bool = true
+    ) {
         self.backgroundFailureHandler = nil
-        self.pendingBackgroundTransportFailure = nil
+        if !preservePendingBackgroundFailure {
+            self.pendingBackgroundTransportFailure = nil
+        }
         self.cancelIdleRekeyTask()
         self.cancelKeepaliveTask()
+    }
+
+    func abortTransportLifecycle() {
+        self.prepareForTransportLifecycleClose(preservePendingBackgroundFailure: false)
     }
 
     package func disconnectForInternalValidation() async {

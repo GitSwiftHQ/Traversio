@@ -83,6 +83,10 @@ func connectionStateEventsReportLostWhenNetworkTransitionProbeFails() async thro
     } catch let error as SSHClientError {
         #expect(error == .connectionScopeEnded)
     }
+
+    #expect(await !transport.hasObservationHandler())
+    #expect(await !connection.hasInstalledBackgroundFailureHandler())
+    #expect(try await nextConnectionStateEvent(from: collector) == nil)
 }
 
 @Test
@@ -100,6 +104,45 @@ func closingConnectionPublishesClosedStateEvent() async throws {
     #expect(closedEvent?.snapshot.state == .closed)
     #expect(await collector.next() == nil)
     #expect(await connection.currentState().state == .closed)
+}
+
+@Test
+func backgroundFailureCloseReleasesConnectionLifecycleReferences() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    var connection: SSHConnection? = try await makeFixtureConnection(transport: transport)
+    let probe = connection!.lifecycleRetainProbe()
+    let collector = ConnectionStateEventCollector(sequence: connection!.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    await transport.enqueueSendFailure(.EPIPE)
+    await transport.emitPathChanged(
+        SSHTransportNetworkPath(
+            status: .satisfied,
+            availableInterfaces: [.wifi],
+            isExpensive: false,
+            isConstrained: false,
+            supportsIPv4: true,
+            supportsIPv6: true
+        )
+    )
+
+    let pathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(pathEvent?.trigger == .networkPathChanged)
+
+    let lostEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(lostEvent?.trigger == .backgroundFailure)
+    #expect(try await nextConnectionStateEvent(from: collector) == nil)
+    #expect(await !transport.hasObservationHandler())
+
+    let hasHandler = await connection?.hasInstalledBackgroundFailureHandler()
+    #expect(hasHandler == false)
+
+    connection = nil
+
+    #expect(await eventuallyReleased { probe.client })
+    #expect(await eventuallyReleased { probe.stateCoordinator })
+    #expect(await eventuallyReleased { probe.lifetime })
 }
 
 @Test
@@ -282,6 +325,20 @@ private func nextConnectionStateEvent(
     ) {
         await collector.next()
     }
+}
+
+private func eventuallyReleased<Object: AnyObject>(
+    _ object: () -> Object?,
+    attempts: Int = 20
+) async -> Bool {
+    for _ in 0..<attempts {
+        if object() == nil {
+            return true
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    return object() == nil
 }
 
 private func makeFixtureConnection(
