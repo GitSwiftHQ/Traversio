@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 1.0.2 - 2026-05-28
+
+Connection lifecycle and timeout fixes:
+
+- Background transport-failure teardown now clears lifecycle handlers and
+  cancels keepalive/rekey scheduling even when the close path skips the normal
+  SSH disconnect packet. This prevents retained connection coordinators and
+  transport clients after network loss.
+- `SSHTimeoutPolicy` now has a separate `hostKeyTrustTimeInterval`. Host-key
+  confirmation can have a longer allowance without consuming the normal
+  connection setup timeout.
+- Public README security scope wording now lists unsupported capabilities
+  directly and keeps release-status wording focused on application integration.
+
 ## 1.0.1 - 2026-05-27
 
 Compatibility fix for migrated private keys:

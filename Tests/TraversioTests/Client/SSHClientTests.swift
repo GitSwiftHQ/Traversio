@@ -1257,12 +1257,12 @@ func sshClientHostKeyTrustWaitDoesNotConsumeConnectionSetupTimeout() async throw
         username: "root",
         authentication: .password("target"),
         hostKeyPolicy: .callback { _ in
-            try await Task.sleep(nanoseconds: 1_200_000_000)
+            try await Task.sleep(nanoseconds: 2_200_000_000)
             return .callback
         },
         timeoutPolicy: SSHTimeoutPolicy(
-            connectionSetupTimeInterval: 1,
-            hostKeyTrustTimeInterval: 2
+            connectionSetupTimeInterval: 2,
+            hostKeyTrustTimeInterval: 3
         )
     )
 

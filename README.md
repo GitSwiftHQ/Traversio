@@ -41,7 +41,7 @@ operational policies above the library.
 dependencies: [
     .package(
         url: "https://github.com/GitSwiftHQ/Traversio.git",
-        from: "1.0.1"
+        from: "1.0.2"
     )
 ]
 ```
@@ -119,7 +119,7 @@ accept OpenSSH private keys, unencrypted PKCS#8 `PRIVATE KEY` PEM containers
 for Ed25519/RSA/ECDSA, unencrypted traditional `EC PRIVATE KEY` PEM containers,
 and traditional `RSA PRIVATE KEY` PEM containers, including supported
 passphrase-encrypted OpenSSL legacy RSA PEM. Encrypted PKCS#8
-`ENCRYPTED PRIVATE KEY` remains outside the `1.0.1` loader.
+`ENCRYPTED PRIVATE KEY` is not supported in the current loader.
 
 Unsupported transport algorithms and auth modes are not silently retried. The
 current public API does not include hostbased auth, security-key auth, X11
