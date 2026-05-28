@@ -945,41 +945,34 @@ public enum SSHClient {
         logHandler: SSHClientLogHandler
     ) async throws -> SSHConnection {
         let timeoutPolicy = SSHInternalTimeoutPolicy(configuration.timeoutPolicy)
+        let connectionSetupBudget = SSHConnectionSetupTimeoutBudget(
+            timeoutNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds
+        )
         let setupCleanup = ConnectionSetupCleanup()
         do {
-            return try await withOptionalTimeout(
-                nanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds,
-                timeoutError: SSHTimeoutError.connectionSetup(
-                    durationNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds ?? 1
-                ),
-                onTimeout: {
-                    if let transportHandle = await setupCleanup.claimSetupTimeoutClose() {
-                        await transportHandle.abort()
-                        await failedSetupDependentCloseOperation?()
-                    }
-                }
-            ) {
-                let transportHandle = try await transportHandleFactory()
-                guard await setupCleanup.register(transportHandle) else {
-                    await transportHandle.abort()
-                    throw CancellationError()
-                }
-                guard await setupCleanup.beginConnectionSetup() else {
-                    await transportHandle.abort()
-                    throw CancellationError()
-                }
-
-                return try await self.makeConnection(
-                    configuration: configuration,
-                    endpoint: endpoint,
-                    transportHandle: transportHandle,
-                    dependentCloseOperation: dependentCloseOperation,
-                    failedSetupDependentCloseOperation: failedSetupDependentCloseOperation,
-                    transportBackendPreference: transportBackendPreference,
-                    logHandler: logHandler,
-                    setupCleanup: setupCleanup
-                )
+            let transportHandle = try await connectionSetupBudget.withTimeout {
+                try await transportHandleFactory()
             }
+            guard await setupCleanup.register(transportHandle) else {
+                await transportHandle.abort()
+                throw CancellationError()
+            }
+            guard await setupCleanup.beginConnectionSetup() else {
+                await transportHandle.abort()
+                throw CancellationError()
+            }
+
+            return try await self.makeConnection(
+                configuration: configuration,
+                endpoint: endpoint,
+                transportHandle: transportHandle,
+                dependentCloseOperation: dependentCloseOperation,
+                failedSetupDependentCloseOperation: failedSetupDependentCloseOperation,
+                transportBackendPreference: transportBackendPreference,
+                logHandler: logHandler,
+                setupCleanup: setupCleanup,
+                connectionSetupBudget: connectionSetupBudget
+            )
         } catch let error as SSHClientError {
             throw error
         } catch {
@@ -992,6 +985,13 @@ public enum SSHClient {
         }
     }
 
+    private static func withConnectionSetupTimeout<Result: Sendable>(
+        _ connectionSetupBudget: SSHConnectionSetupTimeoutBudget,
+        _ operation: @escaping @Sendable () async throws -> Result
+    ) async throws -> Result {
+        try await connectionSetupBudget.withTimeout(operation)
+    }
+
     private static func makeConnection(
         configuration: SSHClientConfiguration,
         endpoint: SSHSocketEndpoint,
@@ -1000,9 +1000,15 @@ public enum SSHClient {
         failedSetupDependentCloseOperation: (@Sendable () async -> Void)? = nil,
         transportBackendPreference: SSHTCPTransportBackendPreference = .automatic,
         logHandler: SSHClientLogHandler,
-        setupCleanup: ConnectionSetupCleanup? = nil
+        setupCleanup: ConnectionSetupCleanup? = nil,
+        connectionSetupBudget: SSHConnectionSetupTimeoutBudget? = nil
     ) async throws -> SSHConnection {
         let timeoutPolicy = SSHInternalTimeoutPolicy(configuration.timeoutPolicy)
+        let connectionSetupBudget =
+            connectionSetupBudget
+            ?? SSHConnectionSetupTimeoutBudget(
+                timeoutNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds
+            )
         let transportConfiguration = SSHTransportProtocolClientConfiguration(
             preferredServerHostKeyAlgorithms:
                 configuration.legacyAlgorithmOptions.preferredServerHostKeyAlgorithms,
@@ -1027,22 +1033,45 @@ public enum SSHClient {
             }
         }
         do {
-            let setup = try await withOptionalTimeout(
-                nanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds,
-                timeoutError: SSHTimeoutError.connectionSetup(
-                    durationNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds ?? 1
-                )
+            let hostKeyTrustPolicy = try configuration.hostKeyPolicy.resolveTrustPolicy(
+                for: endpoint
+            )
+            let versionExchange = try await self.withConnectionSetupTimeout(
+                connectionSetupBudget
             ) {
-                let hostKeyTrustPolicy = try configuration.hostKeyPolicy.resolveTrustPolicy(
-                    for: endpoint
-                )
-                let versionExchange = try await client.exchangeIdentifications()
-                let activation = try await client.completeCurve25519KeyExchange(
+                try await client.exchangeIdentifications()
+            }
+            let negotiation = try await self.withConnectionSetupTimeout(
+                connectionSetupBudget
+            ) {
+                try await client.exchangeKeyExchangeInit()
+            }
+            let keyExchangeResult = try await self.withConnectionSetupTimeout(
+                connectionSetupBudget
+            ) {
+                try await client.beginCurve25519KeyExchange(negotiation: negotiation)
+            }
+            let hostKeyTrustEvaluation = try await client.evaluateCurve25519HostKeyTrust(
+                negotiation: negotiation,
+                keyExchangeResult: keyExchangeResult,
+                remoteEndpoint: endpoint,
+                hostKeyTrustPolicy: hostKeyTrustPolicy,
+                hostKeyTrustTimeoutNanoseconds: timeoutPolicy.hostKeyTrustTimeoutNanoseconds
+            )
+            let activation = try await self.withConnectionSetupTimeout(
+                connectionSetupBudget
+            ) {
+                try await client.activateTrustedCurve25519Transport(
+                    evaluation: hostKeyTrustEvaluation,
                     remoteEndpoint: endpoint,
                     hostKeyTrustPolicy: hostKeyTrustPolicy
                 )
+            }
 
-                let authenticationBanners = try await self.authenticateAny(
+            let authenticationBanners = try await self.withConnectionSetupTimeout(
+                connectionSetupBudget
+            ) {
+                try await self.authenticateAny(
                     configuration.authenticationMethods,
                     username: configuration.username,
                     client: client,
@@ -1050,23 +1079,21 @@ public enum SSHClient {
                     legacyAlgorithmOptions: configuration.legacyAlgorithmOptions,
                     logHandler: logHandler
                 )
-
-                return (versionExchange, activation, authenticationBanners)
             }
 
             let metadata = SSHConnectionMetadata(
                 endpointHost: endpoint.host,
                 endpointPort: endpoint.port,
                 username: configuration.username,
-                clientIdentification: setup.0.clientIdentification.rawValue,
-                remoteIdentification: setup.0.remoteIdentification.rawValue,
-                preIdentificationLines: setup.0.preIdentificationLines,
-                authenticationBanners: setup.2,
-                hostKeyAlgorithm: setup.1.verifiedHostKey.algorithmName,
+                clientIdentification: versionExchange.clientIdentification.rawValue,
+                remoteIdentification: versionExchange.remoteIdentification.rawValue,
+                preIdentificationLines: versionExchange.preIdentificationLines,
+                authenticationBanners: authenticationBanners,
+                hostKeyAlgorithm: activation.verifiedHostKey.algorithmName,
                 hostKeyFingerprintSHA256: SSHTrustedHostKey(
-                    verifiedHostKey: setup.1.verifiedHostKey
+                    verifiedHostKey: activation.verifiedHostKey
                 ).fingerprintSHA256,
-                hostKeyTrustMethod: setup.1.hostKeyTrust.method
+                hostKeyTrustMethod: activation.hostKeyTrust.method
             )
             let lifetime = SSHConnectionLifetime(closeOperation: { [client] in
                 await self.closeTransportResources(

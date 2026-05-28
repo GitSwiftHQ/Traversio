@@ -234,8 +234,35 @@ extension SSHTransportProtocolClient {
         remoteEndpoint: SSHSocketEndpoint? = nil,
         hostKeyVerifier: SSHHostKeyVerifier = SSHHostKeyVerifier(),
         hostKeyTrustPolicy: SSHHostKeyTrustPolicy,
+        hostKeyTrustTimeoutNanoseconds: UInt64? = nil,
         keyDeriver: SSHTransportKeyDeriver = SSHTransportKeyDeriver()
     ) async throws -> SSHCurve25519TransportActivation {
+        let evaluation = try await self.evaluateCurve25519HostKeyTrust(
+            negotiation: negotiation,
+            keyExchangeResult: keyExchangeResult,
+            remoteEndpoint: remoteEndpoint,
+            hostKeyVerifier: hostKeyVerifier,
+            hostKeyTrustPolicy: hostKeyTrustPolicy,
+            hostKeyTrustTimeoutNanoseconds: hostKeyTrustTimeoutNanoseconds
+        )
+
+        return try await self.activateTrustedCurve25519Transport(
+            evaluation: evaluation,
+            remoteEndpoint: remoteEndpoint,
+            hostKeyVerifier: hostKeyVerifier,
+            hostKeyTrustPolicy: hostKeyTrustPolicy,
+            keyDeriver: keyDeriver
+        )
+    }
+
+    func evaluateCurve25519HostKeyTrust(
+        negotiation: SSHKeyExchangeInitNegotiation,
+        keyExchangeResult: SSHCurve25519ClientKeyExchangeResult,
+        remoteEndpoint: SSHSocketEndpoint? = nil,
+        hostKeyVerifier: SSHHostKeyVerifier = SSHHostKeyVerifier(),
+        hostKeyTrustPolicy: SSHHostKeyTrustPolicy,
+        hostKeyTrustTimeoutNanoseconds: UInt64? = nil
+    ) async throws -> SSHCurve25519HostKeyTrustEvaluation {
         try self.requireVersionExchange()
 
         let verifiedHostKey = try keyExchangeResult.verifyServerHostKey(
@@ -243,13 +270,39 @@ extension SSHTransportProtocolClient {
             verifier: hostKeyVerifier
         )
         let sessionIdentifier = self.sessionIdentifier ?? keyExchangeResult.sessionIdentifier
-        let hostKeyTrust = try await hostKeyTrustPolicy.evaluate(
-            verifiedHostKey,
-            context: SSHHostKeyValidationContext(
-                remoteEndpoint: remoteEndpoint,
-                remoteIdentification: try self.requireVersionExchangeValue().remoteIdentification
+        let hostKeyTrust = try await withOptionalTimeout(
+            nanoseconds: hostKeyTrustTimeoutNanoseconds,
+            timeoutError: SSHTimeoutError.hostKeyTrust(
+                durationNanoseconds: hostKeyTrustTimeoutNanoseconds ?? 1
             )
+        ) {
+            try await hostKeyTrustPolicy.evaluate(
+                verifiedHostKey,
+                context: SSHHostKeyValidationContext(
+                    remoteEndpoint: remoteEndpoint,
+                    remoteIdentification: try self.requireVersionExchangeValue().remoteIdentification
+                )
+            )
+        }
+        return SSHCurve25519HostKeyTrustEvaluation(
+            negotiation: negotiation,
+            keyExchangeResult: keyExchangeResult,
+            verifiedHostKey: verifiedHostKey,
+            hostKeyTrust: hostKeyTrust,
+            sessionIdentifier: sessionIdentifier
         )
+    }
+
+    func activateTrustedCurve25519Transport(
+        evaluation: SSHCurve25519HostKeyTrustEvaluation,
+        remoteEndpoint: SSHSocketEndpoint? = nil,
+        hostKeyVerifier: SSHHostKeyVerifier = SSHHostKeyVerifier(),
+        hostKeyTrustPolicy: SSHHostKeyTrustPolicy,
+        keyDeriver: SSHTransportKeyDeriver = SSHTransportKeyDeriver()
+    ) async throws -> SSHCurve25519TransportActivation {
+        let negotiation = evaluation.negotiation
+        let keyExchangeResult = evaluation.keyExchangeResult
+        let sessionIdentifier = evaluation.sessionIdentifier
         let transportKeyMaterial = try keyExchangeResult.deriveTransportKeyMaterial(
             negotiatedAlgorithms: negotiation.algorithms,
             sessionIdentifier: sessionIdentifier,
@@ -356,8 +409,8 @@ extension SSHTransportProtocolClient {
                 return SSHCurve25519TransportActivation(
                     negotiation: negotiation,
                     keyExchangeResult: keyExchangeResult,
-                    verifiedHostKey: verifiedHostKey,
-                    hostKeyTrust: hostKeyTrust,
+                    verifiedHostKey: evaluation.verifiedHostKey,
+                    hostKeyTrust: evaluation.hostKeyTrust,
                     transportKeyMaterial: transportKeyMaterial
                 )
             default:
@@ -1481,6 +1534,14 @@ package struct SSHCurve25519TransportActivation: Equatable, Sendable {
             usesStrictKeyExchange: self.negotiation.usesStrictKeyExchange
         )
     }
+}
+
+package struct SSHCurve25519HostKeyTrustEvaluation: Equatable, Sendable {
+    package let negotiation: SSHKeyExchangeInitNegotiation
+    package let keyExchangeResult: SSHCurve25519ClientKeyExchangeResult
+    package let verifiedHostKey: SSHVerifiedHostKey
+    package let hostKeyTrust: SSHHostKeyTrust
+    package let sessionIdentifier: [UInt8]
 }
 
 struct SSHCancellationHandle: Sendable {

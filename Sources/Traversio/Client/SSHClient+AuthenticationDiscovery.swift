@@ -203,22 +203,22 @@ extension SSHClient {
         logHandler: SSHClientLogHandler
     ) async throws -> SSHAuthenticationMethodDiscoveryResult {
         let timeoutPolicy = SSHInternalTimeoutPolicy(configuration.timeoutPolicy)
+        let connectionSetupBudget = SSHConnectionSetupTimeoutBudget(
+            timeoutNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds
+        )
         do {
-            return try await withOptionalTimeout(
-                nanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds,
-                timeoutError: SSHTimeoutError.connectionSetup(
-                    durationNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds ?? 1
-                )
-            ) {
-                try await self.performAuthenticationMethodDiscovery(
-                    configuration: configuration,
-                    endpoint: endpoint,
-                    transportHandle: try await transportHandleFactory(),
-                    dependentCloseOperation: dependentCloseOperation,
-                    failedSetupDependentCloseOperation: failedSetupDependentCloseOperation,
-                    logHandler: logHandler
-                )
+            let transportHandle = try await connectionSetupBudget.withTimeout {
+                try await transportHandleFactory()
             }
+            return try await self.performAuthenticationMethodDiscovery(
+                configuration: configuration,
+                endpoint: endpoint,
+                transportHandle: transportHandle,
+                dependentCloseOperation: dependentCloseOperation,
+                failedSetupDependentCloseOperation: failedSetupDependentCloseOperation,
+                logHandler: logHandler,
+                connectionSetupBudget: connectionSetupBudget
+            )
         } catch let error as SSHClientError {
             throw error
         } catch let error as SSHHostKeyPolicyError {
@@ -241,9 +241,15 @@ extension SSHClient {
         transportHandle: SSHClientTransportHandle,
         dependentCloseOperation: (@Sendable () async -> Void)? = nil,
         failedSetupDependentCloseOperation: (@Sendable () async -> Void)? = nil,
-        logHandler: SSHClientLogHandler
+        logHandler: SSHClientLogHandler,
+        connectionSetupBudget: SSHConnectionSetupTimeoutBudget? = nil
     ) async throws -> SSHAuthenticationMethodDiscoveryResult {
         let timeoutPolicy = SSHInternalTimeoutPolicy(configuration.timeoutPolicy)
+        let connectionSetupBudget =
+            connectionSetupBudget
+            ?? SSHConnectionSetupTimeoutBudget(
+                timeoutNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds
+            )
         let transportConfiguration = SSHTransportProtocolClientConfiguration(
             preferredServerHostKeyAlgorithms:
                 configuration.legacyAlgorithmOptions.preferredServerHostKeyAlgorithms,
@@ -258,24 +264,34 @@ extension SSHClient {
         )
 
         do {
-            let result = try await withOptionalTimeout(
-                nanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds,
-                timeoutError: SSHTimeoutError.connectionSetup(
-                    durationNanoseconds: timeoutPolicy.connectionSetupTimeoutNanoseconds ?? 1
-                )
-            ) {
-                let hostKeyTrustPolicy = try configuration.hostKeyPolicy.resolveTrustPolicy(
-                    for: endpoint
-                )
-                _ = try await client.exchangeIdentifications()
-                _ = try await client.completeCurve25519KeyExchange(
+            let hostKeyTrustPolicy = try configuration.hostKeyPolicy.resolveTrustPolicy(
+                for: endpoint
+            )
+            _ = try await connectionSetupBudget.withTimeout {
+                try await client.exchangeIdentifications()
+            }
+            let negotiation = try await connectionSetupBudget.withTimeout {
+                try await client.exchangeKeyExchangeInit()
+            }
+            let keyExchangeResult = try await connectionSetupBudget.withTimeout {
+                try await client.beginCurve25519KeyExchange(negotiation: negotiation)
+            }
+            let hostKeyTrustEvaluation = try await client.evaluateCurve25519HostKeyTrust(
+                negotiation: negotiation,
+                keyExchangeResult: keyExchangeResult,
+                remoteEndpoint: endpoint,
+                hostKeyTrustPolicy: hostKeyTrustPolicy,
+                hostKeyTrustTimeoutNanoseconds: timeoutPolicy.hostKeyTrustTimeoutNanoseconds
+            )
+            _ = try await connectionSetupBudget.withTimeout {
+                try await client.activateTrustedCurve25519Transport(
+                    evaluation: hostKeyTrustEvaluation,
                     remoteEndpoint: endpoint,
                     hostKeyTrustPolicy: hostKeyTrustPolicy
                 )
-
-                return try await client.discoverAuthenticationMethods(
-                    username: configuration.username
-                )
+            }
+            let result = try await connectionSetupBudget.withTimeout {
+                try await client.discoverAuthenticationMethods(username: configuration.username)
             }
 
             self.logAuthenticationMethodDiscoveryCompleted(

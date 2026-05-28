@@ -270,7 +270,7 @@ extension SSHClient {
         switch error {
         case let error as SSHTimeoutError:
             return SSHConnectionFailure(
-                stage: self.stage(for: snapshot.phase),
+                stage: self.stage(for: error, phase: snapshot.phase),
                 code: .timeout,
                 message: error.message,
                 diagnostics: diagnostics
@@ -601,6 +601,18 @@ extension SSHClient {
                 message: "Received unexpected SSH packet \(messageID) while waiting for a userauth response.",
                 diagnostics: diagnostics
             )
+        }
+    }
+
+    private static func stage(
+        for timeoutError: SSHTimeoutError,
+        phase: SSHTransportProtocolSetupPhase
+    ) -> SSHConnectionFailureStage {
+        switch timeoutError {
+        case .hostKeyTrust:
+            return .hostKeyTrust
+        default:
+            return self.stage(for: phase)
         }
     }
 

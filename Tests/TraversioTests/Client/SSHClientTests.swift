@@ -664,17 +664,21 @@ func sshCompressionPreferenceAdvertisesExpectedCompressionAlgorithms() {
 }
 
 @Test
-func sshTimeoutPolicyCurrentProfileDefaultBoundsConnectionSetupOnly() {
+func sshTimeoutPolicyCurrentProfileDefaultBoundsSetupAndHostKeyTrust() {
     let policy = SSHTimeoutPolicy()
     let internalPolicy = SSHInternalTimeoutPolicy(policy)
 
     #expect(SSHTimeoutPolicy.defaultConnectionSetupTimeInterval == 30)
+    #expect(SSHTimeoutPolicy.defaultHostKeyTrustTimeInterval == 120)
     #expect(SSHTimeoutPolicy.currentProfileDefault == policy)
     #expect(policy.connectionSetupTimeInterval == 30)
+    #expect(policy.hostKeyTrustTimeInterval == 120)
     #expect(policy.responseTimeInterval == nil)
     #expect(internalPolicy.connectionSetupTimeoutNanoseconds == 30_000_000_000)
+    #expect(internalPolicy.hostKeyTrustTimeoutNanoseconds == 120_000_000_000)
     #expect(internalPolicy.responseTimeoutNanoseconds == nil)
     #expect(SSHTimeoutPolicy.disabled.connectionSetupTimeInterval == nil)
+    #expect(SSHTimeoutPolicy.disabled.hostKeyTrustTimeInterval == nil)
     #expect(SSHTimeoutPolicy.disabled.responseTimeInterval == nil)
 }
 
@@ -705,6 +709,7 @@ func sshAuthenticationMethodDiscoveryConfigurationDefaultsToCurrentTimeoutProfil
 func sshClientConfigurationStoresTimeoutPolicy() {
     let timeoutPolicy = SSHTimeoutPolicy(
         connectionSetupTimeInterval: 15,
+        hostKeyTrustTimeInterval: 120,
         responseTimeInterval: 2.5
     )
     let configuration = SSHClientConfiguration(
@@ -1245,6 +1250,37 @@ func sshClientProxyJumpFinalRouteSetupTimeoutUsesTargetPolicyAndClosesHops() asy
 }
 
 @Test
+func sshClientHostKeyTrustWaitDoesNotConsumeConnectionSetupTimeout() async throws {
+    let transport = try makeAuthenticatedClientFixtureTransport()
+    let configuration = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("target"),
+        hostKeyPolicy: .callback { _ in
+            try await Task.sleep(nanoseconds: 1_200_000_000)
+            return .callback
+        },
+        timeoutPolicy: SSHTimeoutPolicy(
+            connectionSetupTimeInterval: 1,
+            hostKeyTrustTimeInterval: 2
+        )
+    )
+
+    let connection = try await SSHClient.connect(
+        configuration: configuration,
+        logHandler: .disabled,
+        transportHandleFactory: { endpoint in
+            #expect(endpoint == SSHSocketEndpoint(host: "example.com", port: 22))
+            return SSHClientTransportHandle(transport: transport)
+        }
+    )
+
+    #expect(connection.metadata.hostKeyTrustMethod == .callback)
+    await connection.close()
+    #expect(await transport.closeCountObserved() == 1)
+}
+
+@Test
 func sshClientDirectHostKeyTrustTimeoutClosesTransport() async throws {
     let transport = ConnectionFixtureMockSSHByteStreamTransport(
         serverPayloadsAfterNewKeys: []
@@ -1258,7 +1294,10 @@ func sshClientDirectHostKeyTrustTimeoutClosesTransport() async throws {
             try await suspendUntilRouteSetupTimeoutCancellation(recording: timeoutRecorder)
             return .callback
         },
-        timeoutPolicy: SSHTimeoutPolicy(connectionSetupTimeInterval: 0.05)
+        timeoutPolicy: SSHTimeoutPolicy(
+            connectionSetupTimeInterval: 5,
+            hostKeyTrustTimeInterval: 0.05
+        )
     )
 
     do {
@@ -1304,7 +1343,10 @@ func sshClientConnectionProxyHostKeyTrustTimeoutClosesProxyRootTransport() async
             try await suspendUntilRouteSetupTimeoutCancellation(recording: timeoutRecorder)
             return .callback
         },
-        timeoutPolicy: SSHTimeoutPolicy(connectionSetupTimeInterval: 0.05),
+        timeoutPolicy: SSHTimeoutPolicy(
+            connectionSetupTimeInterval: 5,
+            hostKeyTrustTimeInterval: 0.05
+        ),
         connectionProxy: .httpConnect(
             SSHHTTPConnectConnectionProxy(host: "proxy.example.com", port: 3128)
         )
@@ -1351,7 +1393,10 @@ func sshClientProxyJumpFinalHostKeyTrustTimeoutClosesFinalEdgeBeforeRootHop()
             try await suspendUntilRouteSetupTimeoutCancellation(recording: timeoutRecorder)
             return .callback
         },
-        timeoutPolicy: SSHTimeoutPolicy(connectionSetupTimeInterval: 0.05),
+        timeoutPolicy: SSHTimeoutPolicy(
+            connectionSetupTimeInterval: 5,
+            hostKeyTrustTimeInterval: 0.05
+        ),
         proxyJumpHosts: [
             SSHProxyJumpHost(
                 host: "jump-1.example.com",
@@ -1424,7 +1469,10 @@ func sshClientTwoHopProxyJumpFinalHostKeyTrustTimeoutClosesRouteChildFirst()
             try await suspendUntilRouteSetupTimeoutCancellation(recording: timeoutRecorder)
             return .callback
         },
-        timeoutPolicy: SSHTimeoutPolicy(connectionSetupTimeInterval: 0.05),
+        timeoutPolicy: SSHTimeoutPolicy(
+            connectionSetupTimeInterval: 5,
+            hostKeyTrustTimeInterval: 0.05
+        ),
         proxyJumpHosts: [
             SSHProxyJumpHost(
                 host: "jump-1.example.com",
