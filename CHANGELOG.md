@@ -24,9 +24,10 @@ Compatibility fix for migrated private keys:
 
 ## 1.0.0 - 2026-05-25
 
-V1.0 establishes Traversio's first public Swift package surface.
-This release is a V1 integration boundary, not a blanket production-maturity
-claim for every deployment environment.
+Version 1.0.0 establishes Traversio's first public Swift package surface.
+This release covers the documented public feature set. Applications should
+validate their own servers, proxy routes, credentials, network conditions, and
+long-running workloads before using it as their default SSH engine.
 
 Release hardening:
 
@@ -34,10 +35,10 @@ Release hardening:
   metadata parsing for UI labels, capability displays, fingerprints, and
   import diagnostics without decrypting the private-key block.
 - Added a checked public API baseline and `Tools/check-public-api.sh` release
-  check so source-compatibility changes are explicit before release candidates.
+  check so source-compatibility changes are explicit before release.
 - Added a release-metadata check that keeps `TraversioRelease.version`, the
   source package release tag, and the SSH client identification banner aligned.
-- Public docs now spell out the V1 lifecycle and cancellation boundary for
+- Public docs now spell out connection lifecycle and cancellation behavior for
   connection ownership, best-effort session channel cleanup, local listener
   scope exit, and remote forwarding cancellation fallback.
 - Remote TCP/IP forward listeners now ignore late channel messages for recently
@@ -61,7 +62,7 @@ Release hardening:
 
 Implemented surface:
 
-- encrypted SSH transport with the documented V1 algorithm profile, explicit host trust, structured diagnostics, setup timeouts, reply timeouts, idle keepalive, and automatic local rekey policy
+- encrypted SSH transport with the documented algorithm profile, explicit host trust, structured diagnostics, setup timeouts, reply timeouts, idle keepalive, and automatic local rekey policy
 - password, password-change callback, keyboard-interactive, Ed25519/RSA/ECDSA public-key auth, callback-backed signing, SSH agent-backed signing, encrypted OpenSSH key loading, key generation, and explicit legacy `ssh-rsa` compatibility
 - exec, streamed exec, named subsystem startup, PTY shell, environment requests, standard-error extended-data writes, PTY resize, outbound signal requests, and remote exit-signal reporting
 - SFTP metadata, listing, file handles, reads, writes, resumable transfers, recursive directory transfers, progress callbacks, path and handle mutation, filesystem queries, symlink/readlink, and optional OpenSSH fsync
@@ -73,7 +74,7 @@ Validation for this source snapshot:
 - `swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warn-concurrency`
 - `swift test`
 
-Explicit post-V1 areas:
+Not included in this release:
 
 - library-owned automatic reconnect
 - local `ssh_config` parsing

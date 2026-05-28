@@ -27,13 +27,13 @@ The package provides a native Swift API for common SSH client workflows:
 
 At runtime, Traversio uses the newer Apple transport APIs on platform release 26 and later. Older supported releases use compatibility transport and listener backends behind the same public API.
 
-## Release Maturity
+## Release Status
 
-The `1.0.x` line is Traversio's V1 API and validation boundary. It is suitable
-for targeted application integration against the documented feature set, but it
-is not a claim that every deployment environment has production-maturity
-evidence. Applications should keep their own rollout, reconnect, credential
-storage, and operational gating policies above the library.
+The `1.0.x` line is the current supported release line for targeted application
+integration against the documented feature set. It does not cover every SSH
+server, proxy, network condition, credential policy, or long-running workload.
+Applications should keep their own rollout, reconnect, credential storage, and
+operational policies above the library.
 
 ## Add The Package
 
@@ -122,9 +122,9 @@ passphrase-encrypted OpenSSL legacy RSA PEM. Encrypted PKCS#8
 `ENCRYPTED PRIVATE KEY` remains outside the `1.0.1` loader.
 
 Unsupported transport algorithms and auth modes are not silently retried. The
-current public surface intentionally defers hostbased auth, security-key auth,
-X11 forwarding, auth-agent forwarding, local `ssh_config` parsing, mandatory
-built-in trust-store persistence, and library-owned automatic reconnect.
+current public API does not include hostbased auth, security-key auth, X11
+forwarding, auth-agent forwarding, local `ssh_config` parsing, mandatory
+built-in trust-store persistence, or library-owned automatic reconnect.
 
 ## Validation
 
@@ -148,7 +148,8 @@ swift build -Xswiftc -strict-concurrency=complete -Xswiftc -warn-concurrency
 - `CHANGELOG.md`: release notes
 - `CONTRIBUTING.md`: contributor workflow
 
-The source snapshot is intentionally limited to the public package, deterministic tests, and license/contribution material.
+The source snapshot contains the public package, deterministic tests, and
+license/contribution material.
 
 ## License
 
