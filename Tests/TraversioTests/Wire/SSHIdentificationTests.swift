@@ -9,14 +9,14 @@ import Testing
 @Test
 func identificationSerializesWithCRLF() throws {
     let identification = try SSHIdentification(
-        softwareVersion: "Traversio_1.0.2",
+        softwareVersion: "Traversio_1.0.3",
         comments: "dev build"
     )
 
-    #expect(identification.rawValue == "SSH-2.0-Traversio_1.0.2 dev build")
+    #expect(identification.rawValue == "SSH-2.0-Traversio_1.0.3 dev build")
     #expect(
         identification.serializedBytes() ==
-            Array("SSH-2.0-Traversio_1.0.2 dev build\r\n".utf8)
+            Array("SSH-2.0-Traversio_1.0.3 dev build\r\n".utf8)
     )
 }
 

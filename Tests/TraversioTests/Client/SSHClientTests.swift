@@ -2027,6 +2027,7 @@ func sshClientSessionTranscriptCancellationBestEffortClosesExecChannel() async t
         ],
         receiveDelayNanoseconds: 200_000_000
     )
+    let recorder = SSHClientLogEventRecorder()
     let configuration = SSHClientConfiguration(
         host: "example.com",
         username: "root",
@@ -2036,6 +2037,9 @@ func sshClientSessionTranscriptCancellationBestEffortClosesExecChannel() async t
 
     let connection = try await SSHClient.connect(
         configuration: configuration,
+        logHandler: .sink(minimumLevel: .debug) { event in
+            recorder.record(event)
+        },
         transportFactory: { _ in
             transport
         }
@@ -2063,6 +2067,11 @@ func sshClientSessionTranscriptCancellationBestEffortClosesExecChannel() async t
             minimumCount: baselineSentCount + 1
         )
     )
+    let cancellationLogEvents = recorder.snapshot().filter {
+        $0.metadata["errorType"] == "Swift.CancellationError"
+            || $0.message == "SSH operation failed with an unwrapped error."
+    }
+    #expect(cancellationLogEvents.isEmpty)
 
     await connection.close()
 }
@@ -2098,6 +2107,7 @@ func sshClientSessionEventSequenceCancellationBestEffortClosesExecChannel() asyn
         ],
         receiveDelayNanoseconds: 200_000_000
     )
+    let recorder = SSHClientLogEventRecorder()
     let configuration = SSHClientConfiguration(
         host: "example.com",
         username: "root",
@@ -2107,6 +2117,9 @@ func sshClientSessionEventSequenceCancellationBestEffortClosesExecChannel() asyn
 
     let connection = try await SSHClient.connect(
         configuration: configuration,
+        logHandler: .sink(minimumLevel: .debug) { event in
+            recorder.record(event)
+        },
         transportFactory: { _ in
             transport
         }
@@ -2160,8 +2173,45 @@ func sshClientSessionEventSequenceCancellationBestEffortClosesExecChannel() asyn
                 SSHChannelCloseMessage(recipientChannel: 61)
             )
     )
+    let cancellationLogEvents = recorder.snapshot().filter {
+        $0.metadata["errorType"] == "Swift.CancellationError"
+            || $0.message == "SSH operation failed with an unwrapped error."
+    }
+    #expect(cancellationLogEvents.isEmpty)
 
     await connection.close()
+}
+
+@Test
+func sshClientConnectionSetupCancellationDoesNotLogUnwrappedConnectionFailure() async throws {
+    let recorder = SSHClientLogEventRecorder()
+    let configuration = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("s3cr3t"),
+        hostKeyPolicy: .acceptAnyVerifiedHostKey
+    )
+
+    do {
+        _ = try await SSHClient.connect(
+            configuration: configuration,
+            logHandler: .sink(minimumLevel: .debug) { event in
+                recorder.record(event)
+            },
+            transportFactory: { _ in
+                throw CancellationError()
+            }
+        )
+        Issue.record("Expected connection setup cancellation")
+    } catch {
+        #expect(error is CancellationError)
+    }
+
+    let cancellationLogEvents = recorder.snapshot().filter {
+        $0.metadata["errorType"] == "Swift.CancellationError"
+            || $0.message == "SSH connection setup failed with an unwrapped error."
+    }
+    #expect(cancellationLogEvents.isEmpty)
 }
 
 @Test

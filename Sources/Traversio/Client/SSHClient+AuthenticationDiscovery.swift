@@ -329,6 +329,13 @@ extension SSHClient {
                 dependentCloseOperation: failedSetupDependentCloseOperation
             )
             throw error
+        } catch let error as CancellationError {
+            await self.abortDiscoveryTransportResources(
+                client: client,
+                transportHandle: transportHandle,
+                dependentCloseOperation: failedSetupDependentCloseOperation
+            )
+            throw error
         } catch {
             let snapshot = await client.diagnosticsSnapshot()
             await self.abortDiscoveryTransportResources(
@@ -597,6 +604,10 @@ extension SSHClient {
             remoteDisconnect: nil,
             remoteDebugMessages: []
         )
+
+        if error is CancellationError {
+            return error
+        }
 
         if let failure = self.wrapConnectionFailure(
             error,

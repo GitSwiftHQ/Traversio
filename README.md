@@ -41,7 +41,7 @@ operational policies above the library.
 dependencies: [
     .package(
         url: "https://github.com/GitSwiftHQ/Traversio.git",
-        from: "1.0.2"
+        from: "1.0.3"
     )
 ]
 ```

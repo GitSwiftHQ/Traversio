@@ -238,6 +238,8 @@ func withOperationFailureMapping<Result>(
         return try await operation()
     } catch let error as SSHClientError {
         throw error
+    } catch let error as CancellationError {
+        throw error
     } catch {
         let snapshot = await snapshotProvider()
         if let failure = operationFailure(

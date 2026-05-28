@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.0.3 - 2026-05-29
+
+Cancellation diagnostics fix:
+
+- Swift task cancellation now passes through connection setup and operation
+  failure mapping without being logged as an unwrapped SSH connection or
+  operation failure. This keeps caller-owned session shutdown, including
+  terminal view close, out of error-level Traversio logs while preserving
+  `CancellationError` as the thrown result.
+
 ## 1.0.2 - 2026-05-28
 
 Connection lifecycle and timeout fixes:

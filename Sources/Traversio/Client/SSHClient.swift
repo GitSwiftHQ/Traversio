@@ -975,6 +975,8 @@ public enum SSHClient {
             )
         } catch let error as SSHClientError {
             throw error
+        } catch let error as CancellationError {
+            throw error
         } catch {
             throw self.wrapEarlyConnectionSetupError(
                 error,
@@ -1160,6 +1162,15 @@ public enum SSHClient {
             )
             throw error
         } catch let error as SSHAuthenticationMethodError {
+            await self.closeFailedConnectionSetupResources(
+                client: client,
+                transportHandle: transportHandle,
+                dependentCloseOperation: failedSetupDependentCloseOperation,
+                setupCleanup: setupCleanup,
+                timeoutPolicy: timeoutPolicy
+            )
+            throw error
+        } catch let error as CancellationError {
             await self.closeFailedConnectionSetupResources(
                 client: client,
                 transportHandle: transportHandle,
@@ -1947,6 +1958,10 @@ public enum SSHClient {
             remoteDisconnect: nil,
             remoteDebugMessages: []
         )
+
+        if error is CancellationError {
+            return error
+        }
 
         if let failure = self.wrapConnectionFailure(
             error,
