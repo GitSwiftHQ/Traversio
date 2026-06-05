@@ -221,6 +221,8 @@ extension SSHTransportProtocolClient {
                 responseTimeoutNanoseconds: timeoutNanoseconds
             )
             return true
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             self.recordPendingBackgroundTransportFailure(error)
             throw error

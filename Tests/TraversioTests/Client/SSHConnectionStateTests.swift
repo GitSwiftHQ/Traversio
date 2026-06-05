@@ -90,6 +90,44 @@ func connectionStateEventsReportLostWhenNetworkTransitionProbeFails() async thro
 }
 
 @Test
+func connectionStatePathFlapDoesNotTreatCancelledProbeAsBackgroundFailure() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    let baselineSentCount = await transport.sentPayloadCount()
+    await transport.emitPathChanged(.cellularSatisfied)
+
+    let firstPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(firstPathEvent?.trigger == .networkPathChanged)
+    #expect(
+        await waitUntil(
+            maxAttempts: backgroundKeepaliveObservationAttempts,
+            sleepNanoseconds: backgroundKeepaliveObservationSleepNanoseconds
+        ) {
+            await transport.sentPayloadCount() > baselineSentCount
+        }
+    )
+
+    await transport.emitPathChanged(.cellularSatisfied)
+
+    let secondPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(secondPathEvent?.trigger == .networkPathChanged)
+
+    try? await Task.sleep(nanoseconds: 50_000_000)
+
+    #expect(await connection.currentState().state == .ready)
+    #expect(await transport.hasObservationHandler())
+    #expect(await connection.hasInstalledBackgroundFailureHandler())
+
+    await connection.close()
+}
+
+@Test
 func closingConnectionPublishesClosedStateEvent() async throws {
     let transport = try makeAuthenticatedConnectionStateFixtureTransport()
     let connection = try await makeFixtureConnection(transport: transport)
@@ -242,6 +280,10 @@ private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport
         self.sendsBeforeObservationInstall
     }
 
+    func sentPayloadCount() async -> Int {
+        await self.base.sentPayloads().count
+    }
+
     func close() async {
         await self.base.close()
     }
@@ -359,7 +401,8 @@ private func makeFixtureConnection(
 }
 
 private func makeAuthenticatedConnectionStateFixtureTransport(
-    additionalServerPayloads: [[UInt8]] = []
+    additionalServerPayloads: [[UInt8]] = [],
+    emptyReceiveBehavior: EmptyReceiveBehavior = .endOfStream
 ) throws -> ConnectionStateObservationFixtureTransport {
     let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
         .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
@@ -371,7 +414,19 @@ private func makeAuthenticatedConnectionStateFixtureTransport(
         serverPayloadsAfterNewKeys: [
             serviceAcceptPayload,
             authSuccessPayload,
-        ] + additionalServerPayloads
+        ] + additionalServerPayloads,
+        emptyReceiveBehavior: emptyReceiveBehavior
     )
     return ConnectionStateObservationFixtureTransport(base: baseTransport)
+}
+
+private extension SSHTransportNetworkPath {
+    static let cellularSatisfied = SSHTransportNetworkPath(
+        status: .satisfied,
+        availableInterfaces: [.other, .other],
+        isExpensive: true,
+        isConstrained: false,
+        supportsIPv4: true,
+        supportsIPv6: false
+    )
 }
