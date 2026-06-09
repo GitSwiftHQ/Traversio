@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.0.4 - 2026-06-10
+
+Network transition fix:
+
+- Cancelled proactive liveness probes after rapid Network.framework path-change
+  events are no longer recorded as background transport failures. This keeps an
+  otherwise ready connection alive when a newer path observation supersedes an
+  in-flight network-transition probe, while real probe send/receive failures
+  and timeouts still close the connection fail-closed.
+
 ## 1.0.3 - 2026-05-29
 
 Cancellation diagnostics fix:
