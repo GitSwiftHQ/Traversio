@@ -31,6 +31,7 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
     private let sendDelayNanoseconds: UInt64
     private var activeReceiveCount = 0
     private var maximumConcurrentReceiveCount = 0
+    private var receiveRespectCancellationFlags: [Bool] = []
     private var activeSendCount = 0
     private var maximumConcurrentSendCount = 0
 
@@ -97,6 +98,7 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
             self.maximumConcurrentReceiveCount,
             self.activeReceiveCount
         )
+        self.receiveRespectCancellationFlags.append(respectCancellation)
         defer {
             self.activeReceiveCount -= 1
         }
@@ -161,6 +163,10 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
         self.activeReceiveCount
     }
 
+    func receiveRespectCancellationFlagsObserved() -> [Bool] {
+        self.receiveRespectCancellationFlags
+    }
+
     func maximumConcurrentSendCountObserved() -> Int {
         self.maximumConcurrentSendCount
     }
@@ -207,6 +213,7 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
     private var queuedSendFailureCodes: [POSIXErrorCode] = []
     private var activeReceiveCount = 0
     private var maximumConcurrentReceiveCount = 0
+    private var receiveRespectCancellationFlags: [Bool] = []
     private var closeCount = 0
 
     init(
@@ -289,6 +296,7 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
             self.maximumConcurrentReceiveCount,
             self.activeReceiveCount
         )
+        self.receiveRespectCancellationFlags.append(respectCancellation)
         defer {
             self.activeReceiveCount -= 1
         }
@@ -347,6 +355,10 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
 
     func maximumConcurrentReceiveCountObserved() -> Int {
         self.maximumConcurrentReceiveCount
+    }
+
+    func receiveRespectCancellationFlagsObserved() -> [Bool] {
+        self.receiveRespectCancellationFlags
     }
 
     func closeCountObserved() -> Int {

@@ -41,27 +41,68 @@ func transportProtocolClientOpensDirectTCPIPChannelAndTransfersBytes() async thr
     let closePayload = try SSHConnectionMessageSerializer().serialize(
         .channelClose(SSHChannelCloseMessage(recipientChannel: 0))
     )
+    let setupPayloads = [
+        serviceAcceptPayload,
+        authSuccessPayload,
+    ]
     let fixture = try await makeActivatedTransportFixture(
-        serverPayloadsAfterNewKeys: [
-            serviceAcceptPayload,
-            authSuccessPayload,
-            openConfirmationPayload,
-            dataPayload,
-            eofPayload,
-            closePayload,
-        ]
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks
     )
 
     _ = try await fixture.client.authenticatePassword(
         username: "root",
         password: "s3cr3t"
     )
-    let channel = try await fixture.client.openDirectTCPIPChannel(
-        target: SSHSocketEndpoint(host: "db.internal", port: 5432),
-        originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
     )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+    let receiveFlagsBeforeChannelOpen = await fixture.transport.receiveRespectCancellationFlagsObserved()
+    let channelOpenTask = Task {
+        try await fixture.client.openDirectTCPIPChannel(
+            target: SSHSocketEndpoint(host: "db.internal", port: 5432),
+            originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+        )
+    }
+    defer {
+        channelOpenTask.cancel()
+    }
+    #expect(
+        await waitUntil {
+            await fixture.transport.activeReceiveCountObserved() > 0
+        }
+    )
+    let receiveFlagsDuringChannelOpen = await fixture.transport.receiveRespectCancellationFlagsObserved()
+    #expect(receiveFlagsDuringChannelOpen.dropFirst(receiveFlagsBeforeChannelOpen.count).contains(false))
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: openConfirmationPayload),
+            endOfStream: false
+        ),
+    ])
+    let channel = try await channelOpenTask.value
     try await channel.write(Array("ping".utf8))
     try await channel.sendEOF()
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: dataPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: eofPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: closePayload),
+            endOfStream: false
+        ),
+    ])
 
     let firstChunk = try await channel.readChunk()
     let secondChunk = try await channel.readChunk()
@@ -832,22 +873,52 @@ func transportProtocolClientRequestsRemoteTCPIPForwardAndReturnsAllocatedPort() 
             SSHGlobalRequestSuccessMessage(responseData: successWriter.bytes)
         )
     )
+    let setupPayloads = [
+        serviceAcceptPayload,
+        authSuccessPayload,
+    ]
     let fixture = try await makeActivatedTransportFixture(
-        serverPayloadsAfterNewKeys: [
-            serviceAcceptPayload,
-            authSuccessPayload,
-            requestSuccessPayload,
-        ]
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks
     )
 
     _ = try await fixture.client.authenticatePassword(
         username: "root",
         password: "s3cr3t"
     )
-    let activeForward = try await fixture.client.requestTCPIPForward(
-        addressToBind: "127.0.0.1",
-        portToBind: 0
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
     )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+    let receiveFlagsBeforeRequest = await fixture.transport.receiveRespectCancellationFlagsObserved()
+    let requestTask = Task {
+        try await fixture.client.requestTCPIPForward(
+            addressToBind: "127.0.0.1",
+            portToBind: 0
+        )
+    }
+    defer {
+        requestTask.cancel()
+    }
+    #expect(
+        await waitUntil {
+            await fixture.transport.activeReceiveCountObserved() > 0
+        }
+    )
+    let receiveFlagsDuringRequest = await fixture.transport.receiveRespectCancellationFlagsObserved()
+    #expect(receiveFlagsDuringRequest.dropFirst(receiveFlagsBeforeRequest.count).contains(false))
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: requestSuccessPayload),
+            endOfStream: false
+        ),
+    ])
+    let activeForward = try await requestTask.value
 
     #expect(
         activeForward == SSHTCPIPForwardingRequest(

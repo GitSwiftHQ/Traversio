@@ -341,13 +341,15 @@ extension SSHTransportProtocolClient {
             )
         ) {
             try await client.receiveGlobalRequestReplyMessageWithoutTimeout(
-                requestType: requestType
+                requestType: requestType,
+                respectingTransportReceiveCancellation: timeoutNanoseconds != nil
             )
         }
     }
 
     private func receiveGlobalRequestReplyMessageWithoutTimeout(
-        requestType: String
+        requestType: String,
+        respectingTransportReceiveCancellation: Bool
     ) async throws -> SSHConnectionMessage {
         while true {
             if let pendingReply = self.popPendingGlobalRequestReply() {
@@ -367,8 +369,12 @@ extension SSHTransportProtocolClient {
 
             let outcome: SSHInboundWaitOutcome<SSHConnectionMessage> =
                 try await self.withConnectionMessageWaiterTurn {
+                // After the request is on the wire and this task owns the shared receive turn,
+                // default caller cancellation must not cancel the underlying byte-stream receive.
+                // Explicit response timeouts still need cancellation to break the receive wait.
                 let message = try await self.receiveConnectionMessage(
-                    allowingGlobalRequestReply: true
+                    allowingGlobalRequestReply: true,
+                    respectingTransportReceiveCancellation: respectingTransportReceiveCancellation
                 )
                 if try await self.routeManagedSessionMessageIfKnownOrRecentlyCompleted(message) {
                     return .continueWaiting
@@ -428,7 +434,8 @@ extension SSHTransportProtocolClient {
             try await client.receiveChannelOpenConfirmationWithoutTimeout(
                 localChannelID: localChannelID,
                 localInitialWindowSize: localInitialWindowSize,
-                localMaximumPacketSize: localMaximumPacketSize
+                localMaximumPacketSize: localMaximumPacketSize,
+                respectingTransportReceiveCancellation: timeoutNanoseconds != nil
             )
         }
     }
@@ -436,7 +443,8 @@ extension SSHTransportProtocolClient {
     private func receiveChannelOpenConfirmationWithoutTimeout(
         localChannelID: UInt32,
         localInitialWindowSize: UInt32,
-        localMaximumPacketSize: UInt32
+        localMaximumPacketSize: UInt32,
+        respectingTransportReceiveCancellation: Bool
     ) async throws -> SSHChannel {
         while true {
             if let pendingResponse = self.popPendingChannelOpenResponse(
@@ -465,7 +473,12 @@ extension SSHTransportProtocolClient {
 
             let outcome: SSHInboundWaitOutcome<SSHChannel> =
                 try await self.withConnectionMessageWaiterTurn {
-                let message = try await self.receiveConnectionMessage()
+                // After channel-open is on the wire and this task owns the shared receive turn,
+                // default caller cancellation must not cancel the underlying byte-stream receive.
+                // Explicit response timeouts still need cancellation to break the receive wait.
+                let message = try await self.receiveConnectionMessage(
+                    respectingTransportReceiveCancellation: respectingTransportReceiveCancellation
+                )
                 if try await self.routeManagedSessionMessageIfKnownOrRecentlyCompleted(message) {
                     return .continueWaiting
                 }
@@ -608,14 +621,16 @@ extension SSHTransportProtocolClient {
         ) {
             try await client.receiveChannelRequestReplyWithoutTimeout(
                 localChannelID: localChannelID,
-                requestType: requestType
+                requestType: requestType,
+                respectingTransportReceiveCancellation: timeoutNanoseconds != nil
             )
         }
     }
 
     private func receiveChannelRequestReplyWithoutTimeout(
         localChannelID: UInt32,
-        requestType: String
+        requestType: String,
+        respectingTransportReceiveCancellation: Bool
     ) async throws -> UInt32 {
         var remoteWindowAdjustment: UInt32 = 0
 
@@ -648,7 +663,12 @@ extension SSHTransportProtocolClient {
 
             let outcome: SSHInboundWaitOutcome<UInt32> =
                 try await self.withConnectionMessageWaiterTurn {
-                let message = try await self.receiveConnectionMessage()
+                // After the channel request is on the wire and this task owns the shared receive turn,
+                // default caller cancellation must not cancel the underlying byte-stream receive.
+                // Explicit response timeouts still need cancellation to break the receive wait.
+                let message = try await self.receiveConnectionMessage(
+                    respectingTransportReceiveCancellation: respectingTransportReceiveCancellation
+                )
                 if try await self.routeManagedSessionMessageIfKnownOrRecentlyCompleted(message) {
                     return .continueWaiting
                 }
