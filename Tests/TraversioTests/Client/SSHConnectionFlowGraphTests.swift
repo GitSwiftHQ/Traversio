@@ -15,6 +15,8 @@ struct SSHConnectionFlowGraphTests {
 
         #expect(connectionFlowGraph.rootTransportPolicy.selectedBackend == .legacyNWConnection)
         #expect(connectionFlowGraph.rootTransportOwnership == .explicitCancellationHandle)
+        #expect(connectionFlowGraph.handleOwnedRootTransportReadinessProblems.isEmpty)
+        #expect(connectionFlowGraph.isRootTransportReadyForHandleOwnedLongLivedSSH)
         #expect(connectionFlowGraph.structuredRootScopeExitOrder.isEmpty)
     }
 
@@ -31,7 +33,31 @@ struct SSHConnectionFlowGraphTests {
         #expect(connectionFlowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
         #expect(connectionFlowGraph.rootTransportPolicy.ownershipModel == .escapedConnectionHandle)
         #expect(connectionFlowGraph.rootTransportOwnership == .escapedConnectionHandleMissingStructuredOwner)
+        #expect(
+            connectionFlowGraph.handleOwnedRootTransportReadinessProblems == [
+                .missingStructuredRouteOwner
+            ]
+        )
+        #expect(!connectionFlowGraph.isRootTransportReadyForHandleOwnedLongLivedSSH)
         #expect(connectionFlowGraph.structuredRootScopeExitOrder.isEmpty)
+    }
+
+    @Test
+    func structuredModernRouteRootIsCallerScopedNotHandleOwned() throws {
+        let routeFlowGraph = self.makeDirectRouteFlowGraph(
+            rootTransportRole: .structuredRouteRootConnection,
+            transportBackendPreference: .automatic,
+            modernTransportAvailable: true
+        )
+        let connectionFlowGraph = SSHConnectionFlowGraph(routeFlowGraph: routeFlowGraph)
+
+        #expect(connectionFlowGraph.rootTransportOwnership == .structuredScope)
+        #expect(
+            connectionFlowGraph.handleOwnedRootTransportReadinessProblems == [
+                .callerOwnedStructuredRouteScope
+            ]
+        )
+        #expect(!connectionFlowGraph.isRootTransportReadyForHandleOwnedLongLivedSSH)
     }
 
     @Test
@@ -44,6 +70,7 @@ struct SSHConnectionFlowGraphTests {
         let connectionFlowGraph = SSHConnectionFlowGraph(routeFlowGraph: routeFlowGraph)
 
         #expect(connectionFlowGraph.rootTransportOwnership == .structuredScope)
+        #expect(!connectionFlowGraph.isRootTransportReadyForHandleOwnedLongLivedSSH)
         #expect(
             connectionFlowGraph.structuredRootScopeExitOrder
                 == [
@@ -73,6 +100,7 @@ struct SSHConnectionFlowGraphTests {
         let exitOrder = connectionFlowGraph.structuredRootScopeExitOrder
 
         #expect(connectionFlowGraph.rootTransportOwnership == .structuredScope)
+        #expect(!connectionFlowGraph.isRootTransportReadyForHandleOwnedLongLivedSSH)
         #expect(
             exitOrder.prefix(4)
                 == [

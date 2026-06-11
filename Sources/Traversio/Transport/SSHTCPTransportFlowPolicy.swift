@@ -29,18 +29,36 @@ package enum SSHTCPTransportTerminalCloseEvidence: Equatable, Sendable {
     case referenceReleaseOnly
 }
 
+package enum SSHTCPTransportOperationCancellationIsolation: Equatable, Sendable {
+    case canIgnoreCallerCancellation
+    case callerCancellationMayCancelUnderlyingOperation
+}
+
 package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
     package let role: SSHTCPTransportFlowRole
     package let preference: SSHTCPTransportBackendPreference
     package let selectedBackend: SSHTCPTransportBackendSelection
     package let ownershipModel: SSHTCPTransportOwnershipModel
     package let terminalCloseEvidence: SSHTCPTransportTerminalCloseEvidence
+    package let operationCancellationIsolation: SSHTCPTransportOperationCancellationIsolation
     package let requiresDeterministicAbort: Bool
     package let supportsDeterministicAbort: Bool
+    package let requiresSharedProtocolReceiveCancellationIsolation: Bool
+    package let supportsSharedProtocolReceiveCancellationIsolation: Bool
     package let isSelectedBackendAvailable: Bool
 
     package var needsStructuredRouteOwnerForDeterministicAbort: Bool {
         self.requiresDeterministicAbort && !self.supportsDeterministicAbort
+    }
+
+    package var needsSharedProtocolReceiveCancellationIsolation: Bool {
+        self.requiresSharedProtocolReceiveCancellationIsolation
+            && !self.supportsSharedProtocolReceiveCancellationIsolation
+    }
+
+    package var satisfiesLongLivedRouteRootRequirements: Bool {
+        !self.needsStructuredRouteOwnerForDeterministicAbort
+            && !self.needsSharedProtocolReceiveCancellationIsolation
     }
 
     package static func resolveCurrentPlatform(
@@ -71,10 +89,19 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         let terminalCloseEvidence = self.terminalCloseEvidence(
             ownershipModel: ownershipModel
         )
+        let operationCancellationIsolation = self.operationCancellationIsolation(
+            selectedBackend: selectedBackend
+        )
         let requiresDeterministicAbort = self.requiresDeterministicAbort(role: role)
         let supportsDeterministicAbort = self.supportsDeterministicAbort(
             terminalCloseEvidence: terminalCloseEvidence
         )
+        let requiresSharedProtocolReceiveCancellationIsolation =
+            self.requiresSharedProtocolReceiveCancellationIsolation(role: role)
+        let supportsSharedProtocolReceiveCancellationIsolation =
+            self.supportsSharedProtocolReceiveCancellationIsolation(
+                isolation: operationCancellationIsolation
+            )
 
         return Self(
             role: role,
@@ -82,8 +109,11 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             selectedBackend: selectedBackend,
             ownershipModel: ownershipModel,
             terminalCloseEvidence: terminalCloseEvidence,
+            operationCancellationIsolation: operationCancellationIsolation,
             requiresDeterministicAbort: requiresDeterministicAbort,
             supportsDeterministicAbort: supportsDeterministicAbort,
+            requiresSharedProtocolReceiveCancellationIsolation: requiresSharedProtocolReceiveCancellationIsolation,
+            supportsSharedProtocolReceiveCancellationIsolation: supportsSharedProtocolReceiveCancellationIsolation,
             isSelectedBackendAvailable: selectedBackend == .legacyNWConnection || modernAvailable
         )
     }
@@ -146,6 +176,15 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         }
     }
 
+    private static func operationCancellationIsolation(
+        selectedBackend: SSHTCPTransportBackendSelection
+    ) -> SSHTCPTransportOperationCancellationIsolation {
+        switch selectedBackend {
+        case .legacyNWConnection, .modernNetworkConnection:
+            .canIgnoreCallerCancellation
+        }
+    }
+
     private static func requiresDeterministicAbort(
         role: SSHTCPTransportFlowRole
     ) -> Bool {
@@ -157,6 +196,17 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         }
     }
 
+    private static func requiresSharedProtocolReceiveCancellationIsolation(
+        role: SSHTCPTransportFlowRole
+    ) -> Bool {
+        switch role {
+        case .routeRootConnection, .structuredRouteRootConnection:
+            true
+        case .ordinaryConnection, .scopedConnection, .listener, .lifecycleControlledListener:
+            false
+        }
+    }
+
     private static func supportsDeterministicAbort(
         terminalCloseEvidence: SSHTCPTransportTerminalCloseEvidence
     ) -> Bool {
@@ -164,6 +214,17 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         case .explicitCancellation, .structuredScopeExit:
             true
         case .referenceReleaseOnly:
+            false
+        }
+    }
+
+    private static func supportsSharedProtocolReceiveCancellationIsolation(
+        isolation: SSHTCPTransportOperationCancellationIsolation
+    ) -> Bool {
+        switch isolation {
+        case .canIgnoreCallerCancellation:
+            true
+        case .callerCancellationMayCancelUnderlyingOperation:
             false
         }
     }

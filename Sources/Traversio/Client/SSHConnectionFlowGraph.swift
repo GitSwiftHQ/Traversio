@@ -35,6 +35,27 @@ struct SSHConnectionFlowGraph: Sendable {
         }
     }
 
+    var handleOwnedRootTransportReadinessProblems: Set<SSHConnectionRootTransportReadinessProblem> {
+        let policy = self.rootTransportPolicy
+        var problems: Set<SSHConnectionRootTransportReadinessProblem> = []
+
+        if policy.needsStructuredRouteOwnerForDeterministicAbort {
+            problems.insert(.missingStructuredRouteOwner)
+        }
+        if policy.needsSharedProtocolReceiveCancellationIsolation {
+            problems.insert(.missingSharedProtocolReceiveCancellationIsolation)
+        }
+        if policy.ownershipModel == .structuredScope {
+            problems.insert(.callerOwnedStructuredRouteScope)
+        }
+
+        return problems
+    }
+
+    var isRootTransportReadyForHandleOwnedLongLivedSSH: Bool {
+        self.handleOwnedRootTransportReadinessProblems.isEmpty
+    }
+
     var structuredRootScopeExitOrder: [SSHConnectionFlowResource] {
         guard self.rootTransportOwnership == .structuredScope else {
             return []
@@ -69,6 +90,12 @@ enum SSHConnectionRootTransportOwnership: Equatable, Sendable {
     case structuredScope
     case escapedConnectionHandle
     case escapedConnectionHandleMissingStructuredOwner
+}
+
+enum SSHConnectionRootTransportReadinessProblem: Equatable, Hashable, Sendable {
+    case missingStructuredRouteOwner
+    case callerOwnedStructuredRouteScope
+    case missingSharedProtocolReceiveCancellationIsolation
 }
 
 enum SSHConnectionFlowResource: Equatable, Sendable {
