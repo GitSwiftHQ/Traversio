@@ -186,6 +186,14 @@ extension SSHClientLogHandler {
                     event.snapshot.networkPath?.isConstrained.description
                 ),
                 (
+                    "isUltraConstrainedPath",
+                    event.snapshot.networkPath?.isUltraConstrained?.description
+                ),
+                (
+                    "linkQuality",
+                    event.snapshot.networkPath?.linkQuality?.rawValue
+                ),
+                (
                     "supportsIPv4",
                     event.snapshot.networkPath?.supportsIPv4.description
                 ),

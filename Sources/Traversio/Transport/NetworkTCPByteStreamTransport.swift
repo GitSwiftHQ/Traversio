@@ -211,6 +211,22 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
                     )
                 )
             }
+            .onPathUpdate { _, path in
+                box.emit(.networkPathChanged(Self.transportNetworkPath(from: path)))
+            }
+            .onViabilityUpdate { _, isViable in
+                box.emit(.viabilityChanged(isViable))
+            }
+            .onBetterPathUpdate { _, hasBetterPath in
+                box.emit(.betterPathAvailable(hasBetterPath))
+            }
+    }
+
+    package func currentNetworkPath() async -> SSHTransportNetworkPath? {
+        guard let path = try? self.connectionBox.connectionSnapshot().currentPath else {
+            return nil
+        }
+        return Self.transportNetworkPath(from: path)
     }
 
     package func close() async {
@@ -342,8 +358,10 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
             availableInterfaces: path.availableInterfaces.map(self.transportNetworkInterface),
             isExpensive: path.isExpensive,
             isConstrained: path.isConstrained,
+            isUltraConstrained: path.isUltraConstrained,
             supportsIPv4: path.supportsIPv4,
-            supportsIPv6: path.supportsIPv6
+            supportsIPv6: path.supportsIPv6,
+            linkQuality: self.transportNetworkPathLinkQuality(from: path.linkQuality)
         )
     }
 
@@ -359,6 +377,23 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
             return .requiresConnection
         @unknown default:
             return .unsatisfied
+        }
+    }
+
+    private static func transportNetworkPathLinkQuality(
+        from quality: NWPath.LinkQuality
+    ) -> SSHTransportNetworkPathLinkQuality {
+        switch quality {
+        case .unknown:
+            return .unknown
+        case .minimal:
+            return .minimal
+        case .moderate:
+            return .moderate
+        case .good:
+            return .good
+        @unknown default:
+            return .unknown
         }
     }
 

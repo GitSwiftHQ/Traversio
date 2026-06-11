@@ -125,6 +125,16 @@ public struct SSHConnection: Sendable {
         }
     }
 
+    /// Latest Network.framework path snapshot reported by the active transport.
+    ///
+    /// This is an observation snapshot, not a separate network probe. A `nil`
+    /// value means the selected backend has not reported path details yet.
+    public var networkPath: SSHConnectionNetworkPath? {
+        get async {
+            await self.currentState().networkPath
+        }
+    }
+
     func abort() async {
         await self.lifetime.abort()
     }
@@ -1117,6 +1127,9 @@ public enum SSHClient {
                 client: client,
                 logHandler: logHandler
             )
+            if let initialNetworkPath = await transportHandle.transport.currentNetworkPath() {
+                await stateCoordinator.recordInitialTransportNetworkPath(initialNetworkPath)
+            }
             await transportObservationBuffer.attach { [weak lifetime, weak stateCoordinator] event in
                 guard let stateCoordinator else {
                     return

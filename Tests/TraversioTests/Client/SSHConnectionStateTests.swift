@@ -28,8 +28,10 @@ func connectionStateEventsReportNetworkPathChangesAndProbeRecovery() async throw
             availableInterfaces: [.wifi],
             isExpensive: false,
             isConstrained: false,
+            isUltraConstrained: false,
             supportsIPv4: true,
-            supportsIPv6: true
+            supportsIPv6: true,
+            linkQuality: .good
         )
     )
 
@@ -38,11 +40,51 @@ func connectionStateEventsReportNetworkPathChangesAndProbeRecovery() async throw
     #expect(pathEvent?.snapshot.state == .ready)
     #expect(pathEvent?.snapshot.networkPath?.status == .satisfied)
     #expect(pathEvent?.snapshot.networkPath?.availableInterfaces == [.wifi])
+    #expect(pathEvent?.snapshot.networkPath?.isUltraConstrained == false)
+    #expect(pathEvent?.snapshot.networkPath?.linkQuality == .good)
 
     let probeEvent = try await nextConnectionStateEvent(from: collector)
     #expect(probeEvent?.trigger == .proactiveLivenessCheckSucceeded)
     #expect(probeEvent?.snapshot.state == .ready)
     #expect(probeEvent?.snapshot.detail == nil)
+
+    await connection.close()
+}
+
+@Test
+func connectionCurrentNetworkPathReportsInitialTransportSnapshotWithoutProbe() async throws {
+    let initialPath = SSHTransportNetworkPath(
+        status: .satisfied,
+        availableInterfaces: [.cellular],
+        isExpensive: true,
+        isConstrained: true,
+        isUltraConstrained: true,
+        supportsIPv4: true,
+        supportsIPv6: false,
+        linkQuality: .minimal
+    )
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        initialNetworkPath: initialPath
+    )
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    let connectedEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(connectedEvent?.trigger == .connected)
+
+    let pathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(pathEvent?.trigger == .networkPathChanged)
+    #expect(pathEvent?.snapshot.networkPath?.availableInterfaces == [.cellular])
+    #expect(pathEvent?.snapshot.networkPath?.isExpensive == true)
+    #expect(pathEvent?.snapshot.networkPath?.isConstrained == true)
+    #expect(pathEvent?.snapshot.networkPath?.isUltraConstrained == true)
+    #expect(pathEvent?.snapshot.networkPath?.supportsIPv6 == false)
+    #expect(pathEvent?.snapshot.networkPath?.linkQuality == .minimal)
+
+    let sentPayloadCountAfterInitialSnapshot = await transport.sentPayloadCount()
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await transport.sentPayloadCount() == sentPayloadCountAfterInitialSnapshot)
+    #expect(await connection.networkPath == pathEvent?.snapshot.networkPath)
 
     await connection.close()
 }
@@ -245,11 +287,16 @@ func failedTransportObservationPublishesLostAndEndsConnectionLifetime() async th
 
 private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport {
     private let base: ConnectionFixtureMockSSHByteStreamTransport
+    private let initialNetworkPath: SSHTransportNetworkPath?
     private var observationHandler: (@Sendable (SSHTransportObservationEvent) -> Void)?
     private var sendsBeforeObservationInstall = 0
 
-    init(base: ConnectionFixtureMockSSHByteStreamTransport) {
+    init(
+        base: ConnectionFixtureMockSSHByteStreamTransport,
+        initialNetworkPath: SSHTransportNetworkPath? = nil
+    ) {
         self.base = base
+        self.initialNetworkPath = initialNetworkPath
     }
 
     func send(_ bytes: [UInt8], endOfStream: Bool) async throws {
@@ -270,6 +317,10 @@ private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport
         _ handler: (@Sendable (SSHTransportObservationEvent) -> Void)?
     ) async {
         self.observationHandler = handler
+    }
+
+    func currentNetworkPath() async -> SSHTransportNetworkPath? {
+        self.initialNetworkPath
     }
 
     func hasObservationHandler() -> Bool {
@@ -402,7 +453,8 @@ private func makeFixtureConnection(
 
 private func makeAuthenticatedConnectionStateFixtureTransport(
     additionalServerPayloads: [[UInt8]] = [],
-    emptyReceiveBehavior: EmptyReceiveBehavior = .endOfStream
+    emptyReceiveBehavior: EmptyReceiveBehavior = .endOfStream,
+    initialNetworkPath: SSHTransportNetworkPath? = nil
 ) throws -> ConnectionStateObservationFixtureTransport {
     let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
         .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
@@ -417,7 +469,10 @@ private func makeAuthenticatedConnectionStateFixtureTransport(
         ] + additionalServerPayloads,
         emptyReceiveBehavior: emptyReceiveBehavior
     )
-    return ConnectionStateObservationFixtureTransport(base: baseTransport)
+    return ConnectionStateObservationFixtureTransport(
+        base: baseTransport,
+        initialNetworkPath: initialNetworkPath
+    )
 }
 
 private extension SSHTransportNetworkPath {
@@ -426,7 +481,9 @@ private extension SSHTransportNetworkPath {
         availableInterfaces: [.other, .other],
         isExpensive: true,
         isConstrained: false,
+        isUltraConstrained: false,
         supportsIPv4: true,
-        supportsIPv6: false
+        supportsIPv6: false,
+        linkQuality: .moderate
     )
 }

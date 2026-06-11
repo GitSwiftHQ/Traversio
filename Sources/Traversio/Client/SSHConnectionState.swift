@@ -77,6 +77,18 @@ public enum SSHConnectionNetworkInterface: String, Equatable, Sendable {
     case other
 }
 
+/// Link-layer path quality reported by Network.framework when available.
+public enum SSHConnectionNetworkPathLinkQuality: String, Equatable, Sendable {
+    /// Unknown.
+    case unknown
+    /// Minimal.
+    case minimal
+    /// Moderate.
+    case moderate
+    /// Good.
+    case good
+}
+
 /// Snapshot of the current network path for an SSH connection.
 public struct SSHConnectionNetworkPath: Equatable, Sendable {
     /// Status.
@@ -87,10 +99,14 @@ public struct SSHConnectionNetworkPath: Equatable, Sendable {
     public let isExpensive: Bool
     /// Is Constrained.
     public let isConstrained: Bool
+    /// Is Ultra Constrained.
+    public let isUltraConstrained: Bool?
     /// Supports I Pv4.
     public let supportsIPv4: Bool
     /// Supports I Pv6.
     public let supportsIPv6: Bool
+    /// Link Quality.
+    public let linkQuality: SSHConnectionNetworkPathLinkQuality?
     /// Creates an SSHConnectionNetworkPath.
 
     public init(
@@ -98,15 +114,19 @@ public struct SSHConnectionNetworkPath: Equatable, Sendable {
         availableInterfaces: [SSHConnectionNetworkInterface],
         isExpensive: Bool,
         isConstrained: Bool,
+        isUltraConstrained: Bool? = nil,
         supportsIPv4: Bool,
-        supportsIPv6: Bool
+        supportsIPv6: Bool,
+        linkQuality: SSHConnectionNetworkPathLinkQuality? = nil
     ) {
         self.status = status
         self.availableInterfaces = availableInterfaces
         self.isExpensive = isExpensive
         self.isConstrained = isConstrained
+        self.isUltraConstrained = isUltraConstrained
         self.supportsIPv4 = supportsIPv4
         self.supportsIPv6 = supportsIPv6
+        self.linkQuality = linkQuality
     }
 }
 
@@ -233,6 +253,28 @@ package actor SSHConnectionStateCoordinator {
 
     func currentSnapshot() -> SSHConnectionStateSnapshot {
         self.snapshot
+    }
+
+    func recordInitialTransportNetworkPath(_ networkPath: SSHTransportNetworkPath) {
+        guard !self.didReachTerminalState, self.snapshot.networkPath == nil else {
+            return
+        }
+
+        let path = Self.connectionNetworkPath(from: networkPath)
+        self.snapshot = SSHConnectionStateSnapshot(
+            state: self.classifiedState(
+                transportState: self.snapshot.transportState,
+                networkPath: path,
+                isTransportViable: self.snapshot.isTransportViable,
+                explicitState: nil
+            ),
+            transportState: self.snapshot.transportState,
+            networkPath: path,
+            isTransportViable: self.snapshot.isTransportViable,
+            betterPathAvailable: self.snapshot.betterPathAvailable,
+            detail: self.snapshot.detail
+        )
+        self.emit(.networkPathChanged)
     }
 
     func recordExplicitClose() {
@@ -477,8 +519,10 @@ package actor SSHConnectionStateCoordinator {
             availableInterfaces: path.availableInterfaces.map(self.connectionNetworkInterface),
             isExpensive: path.isExpensive,
             isConstrained: path.isConstrained,
+            isUltraConstrained: path.isUltraConstrained,
             supportsIPv4: path.supportsIPv4,
-            supportsIPv6: path.supportsIPv6
+            supportsIPv6: path.supportsIPv6,
+            linkQuality: path.linkQuality.map(self.connectionNetworkPathLinkQuality)
         )
     }
 
@@ -492,6 +536,21 @@ package actor SSHConnectionStateCoordinator {
             return .unsatisfied
         case .requiresConnection:
             return .requiresConnection
+        }
+    }
+
+    private static func connectionNetworkPathLinkQuality(
+        from quality: SSHTransportNetworkPathLinkQuality
+    ) -> SSHConnectionNetworkPathLinkQuality {
+        switch quality {
+        case .unknown:
+            return .unknown
+        case .minimal:
+            return .minimal
+        case .moderate:
+            return .moderate
+        case .good:
+            return .good
         }
     }
 

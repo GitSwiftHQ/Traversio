@@ -28,28 +28,41 @@ package enum SSHTransportNetworkInterface: String, Equatable, Sendable {
     case other
 }
 
+package enum SSHTransportNetworkPathLinkQuality: String, Equatable, Sendable {
+    case unknown
+    case minimal
+    case moderate
+    case good
+}
+
 package struct SSHTransportNetworkPath: Equatable, Sendable {
     package let status: SSHTransportNetworkPathStatus
     package let availableInterfaces: [SSHTransportNetworkInterface]
     package let isExpensive: Bool
     package let isConstrained: Bool
+    package let isUltraConstrained: Bool?
     package let supportsIPv4: Bool
     package let supportsIPv6: Bool
+    package let linkQuality: SSHTransportNetworkPathLinkQuality?
 
     package init(
         status: SSHTransportNetworkPathStatus,
         availableInterfaces: [SSHTransportNetworkInterface],
         isExpensive: Bool,
         isConstrained: Bool,
+        isUltraConstrained: Bool? = nil,
         supportsIPv4: Bool,
-        supportsIPv6: Bool
+        supportsIPv6: Bool,
+        linkQuality: SSHTransportNetworkPathLinkQuality? = nil
     ) {
         self.status = status
         self.availableInterfaces = availableInterfaces
         self.isExpensive = isExpensive
         self.isConstrained = isConstrained
+        self.isUltraConstrained = isUltraConstrained
         self.supportsIPv4 = supportsIPv4
         self.supportsIPv6 = supportsIPv6
+        self.linkQuality = linkQuality
     }
 }
 

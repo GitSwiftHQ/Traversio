@@ -137,6 +137,39 @@ func sshClientLogRecorderBuildsScopeEndedSupportExportWithStateLogs() throws {
 }
 
 @Test
+func sshClientLogHandlerIncludesNetworkQualityStateMetadata() {
+    let recorder = SSHClientLogRecorder(maximumEventCount: 4)
+    let handler = recorder.logHandler(minimumLevel: .info)
+
+    handler.logConnectionStateEvent(
+        SSHConnectionStateEvent(
+            trigger: .networkPathChanged,
+            snapshot: SSHConnectionStateSnapshot(
+                state: .ready,
+                networkPath: SSHConnectionNetworkPath(
+                    status: .satisfied,
+                    availableInterfaces: [.wifi],
+                    isExpensive: false,
+                    isConstrained: true,
+                    isUltraConstrained: true,
+                    supportsIPv4: true,
+                    supportsIPv6: false,
+                    linkQuality: .good
+                )
+            )
+        )
+    )
+
+    let formattedText = recorder.snapshot().formattedText
+    #expect(formattedText.contains("pathStatus=\"satisfied\""))
+    #expect(formattedText.contains("availableInterfaces=\"wifi\""))
+    #expect(formattedText.contains("isConstrainedPath=\"true\""))
+    #expect(formattedText.contains("isUltraConstrainedPath=\"true\""))
+    #expect(formattedText.contains("linkQuality=\"good\""))
+    #expect(formattedText.contains("supportsIPv6=\"false\""))
+}
+
+@Test
 func sshClientLogRecorderBuildsAuthenticationSupportExport() throws {
     let report = try #require(
         SSHClientLogRecorder()

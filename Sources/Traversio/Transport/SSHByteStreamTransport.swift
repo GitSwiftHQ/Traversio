@@ -31,6 +31,7 @@ package protocol SSHByteStreamTransport: Sendable {
     func setObservationHandler(
         _ handler: (@Sendable (SSHTransportObservationEvent) -> Void)?
     ) async
+    func currentNetworkPath() async -> SSHTransportNetworkPath?
     func close() async
     func abort() async
 }
@@ -48,6 +49,10 @@ package extension SSHByteStreamTransport {
     func setObservationHandler(
         _ handler: (@Sendable (SSHTransportObservationEvent) -> Void)?
     ) async {
+    }
+
+    func currentNetworkPath() async -> SSHTransportNetworkPath? {
+        nil
     }
 
     func close() async {
