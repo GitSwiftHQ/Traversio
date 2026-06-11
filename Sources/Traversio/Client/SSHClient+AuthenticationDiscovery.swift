@@ -143,11 +143,14 @@ extension SSHClient {
             logHandler: logHandler
         )
 
+        let directRouteRootTransportHandleFactory =
+            routeRootTransportHandleFactory ?? transportHandleFactory
+
         return try await self.performAuthenticationMethodDiscoveryWithRouteSetupTimeout(
             configuration: configuration,
             endpoint: endpoint,
             transportHandleFactory: {
-                try await transportHandleFactory(endpoint)
+                try await directRouteRootTransportHandleFactory(endpoint)
             },
             logHandler: logHandler
         )

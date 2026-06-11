@@ -109,6 +109,64 @@ func sshClientDiscoveryReportsUnauthenticatedAccessThroughPublicAPI() async thro
 }
 
 @Test
+func sshClientAuthenticationDiscoveryDirectRouteUsesRouteRootTransportFactory()
+    async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let failurePayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .failure(
+            SSHUserAuthenticationFailureMessage(
+                authenticationsThatCanContinue: ["publickey", "password"],
+                partialSuccess: false
+            )
+        )
+    )
+    let transport = ConnectionFixtureMockSSHByteStreamTransport(
+        serverPayloadsAfterNewKeys: [
+            serviceAcceptPayload,
+            failurePayload,
+        ]
+    )
+    let recorder = SSHRouteRootFactoryRecorder()
+    let configuration = SSHAuthenticationMethodDiscoveryConfiguration(
+        host: "example.com",
+        username: "root",
+        hostKeyPolicy: .acceptAnyVerifiedHostKey
+    )
+
+    let result = try await SSHClient.discoverAuthenticationMethods(
+        configuration: configuration,
+        logHandler: .disabled,
+        transportHandleFactory: { endpoint in
+            await recorder.recordTransportFactoryEndpoint(endpoint)
+            Issue.record("Direct discovery should use the route-root transport factory")
+            return SSHClientTransportHandle(
+                transport: try makeAuthenticationDiscoveryFailureTransport()
+            )
+        },
+        routeRootTransportHandleFactory: { endpoint in
+            await recorder.recordRouteRootTransportFactoryEndpoint(endpoint)
+            return SSHClientTransportHandle(transport: transport)
+        },
+        jumpTransportFactory: { _, endpoint in
+            Issue.record("Direct discovery should not open ProxyJump endpoint \(endpoint)")
+            return SSHClientTransportHandle(
+                transport: try makeAuthenticationDiscoveryFailureTransport()
+            )
+        }
+    )
+
+    #expect(result.availableMethods == ["publickey", "password"])
+    #expect(await recorder.recordedTransportFactoryEndpoints().isEmpty)
+    #expect(
+        await recorder.recordedRouteRootTransportFactoryEndpoints()
+            == [SSHSocketEndpoint(host: "example.com", port: 22)]
+    )
+    #expect(await transport.closeCountObserved() == 1)
+}
+
+@Test
 func sshClientAuthenticationDiscoveryProxyJumpFirstHopRouteSetupTimeoutUsesHopPolicy()
     async throws {
     let configuration = SSHAuthenticationMethodDiscoveryConfiguration(

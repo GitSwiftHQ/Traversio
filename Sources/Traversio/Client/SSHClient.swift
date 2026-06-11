@@ -330,6 +330,8 @@ public enum SSHClient {
     ) async throws -> SSHConnection {
         if configuration.proxyJumpHosts.isEmpty {
             let endpoint = SSHSocketEndpoint(host: configuration.host, port: configuration.port)
+            let directRouteRootTransportHandleFactory =
+                routeRootTransportHandleFactory ?? transportHandleFactory
             logHandler.logConnectionStarted(
                 endpoint: endpoint,
                 username: configuration.username,
@@ -340,7 +342,7 @@ public enum SSHClient {
                 configuration: configuration,
                 endpoint: endpoint,
                 transportHandleFactory: {
-                    try await transportHandleFactory(endpoint)
+                    try await directRouteRootTransportHandleFactory(endpoint)
                 },
                 transportBackendPreference: connectionTransportBackendPreference,
                 logHandler: logHandler

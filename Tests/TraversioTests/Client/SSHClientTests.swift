@@ -309,6 +309,27 @@ actor SSHProxyJumpFactoryRecorder {
     }
 }
 
+actor SSHRouteRootFactoryRecorder {
+    private var transportFactoryEndpoints: [SSHSocketEndpoint] = []
+    private var routeRootTransportFactoryEndpoints: [SSHSocketEndpoint] = []
+
+    func recordTransportFactoryEndpoint(_ endpoint: SSHSocketEndpoint) {
+        self.transportFactoryEndpoints.append(endpoint)
+    }
+
+    func recordRouteRootTransportFactoryEndpoint(_ endpoint: SSHSocketEndpoint) {
+        self.routeRootTransportFactoryEndpoints.append(endpoint)
+    }
+
+    func recordedTransportFactoryEndpoints() -> [SSHSocketEndpoint] {
+        self.transportFactoryEndpoints
+    }
+
+    func recordedRouteRootTransportFactoryEndpoints() -> [SSHSocketEndpoint] {
+        self.routeRootTransportFactoryEndpoints
+    }
+}
+
 actor SSHProxyJumpTransportQueue {
     private var transports: [any SSHByteStreamTransport]
 
@@ -1015,6 +1036,49 @@ func sshClientWithConnectionFinishesAfterGracefulCloseTimeoutWhenDisconnectStall
         }
     }
 
+    #expect(await transport.closeCountObserved() == 1)
+}
+
+@Test
+func sshClientDirectConnectUsesRouteRootTransportFactory() async throws {
+    let transport = try makeAuthenticatedClientFixtureTransport()
+    let recorder = SSHRouteRootFactoryRecorder()
+    let configuration = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("s3cr3t"),
+        hostKeyPolicy: .acceptAnyVerifiedHostKey
+    )
+
+    let connection = try await SSHClient.connect(
+        configuration: configuration,
+        logHandler: .disabled,
+        transportHandleFactory: { endpoint in
+            await recorder.recordTransportFactoryEndpoint(endpoint)
+            Issue.record("Direct route root should use the route-root transport factory")
+            return SSHClientTransportHandle(
+                transport: try makeAuthenticatedClientFixtureTransport()
+            )
+        },
+        routeRootTransportHandleFactory: { endpoint in
+            await recorder.recordRouteRootTransportFactoryEndpoint(endpoint)
+            return SSHClientTransportHandle(transport: transport)
+        },
+        jumpTransportFactory: { _, endpoint in
+            Issue.record("Direct route root should not open ProxyJump endpoint \(endpoint)")
+            return SSHClientTransportHandle(
+                transport: try makeAuthenticatedClientFixtureTransport()
+            )
+        }
+    )
+
+    await connection.close()
+
+    #expect(await recorder.recordedTransportFactoryEndpoints().isEmpty)
+    #expect(
+        await recorder.recordedRouteRootTransportFactoryEndpoints()
+            == [SSHSocketEndpoint(host: "example.com", port: 22)]
+    )
     #expect(await transport.closeCountObserved() == 1)
 }
 
