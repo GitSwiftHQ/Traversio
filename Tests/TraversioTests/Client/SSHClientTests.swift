@@ -330,6 +330,18 @@ actor SSHRouteRootFactoryRecorder {
     }
 }
 
+actor SSHScopedRouteFlowRecorder {
+    private var flowGraphs: [SSHRouteFlowGraph] = []
+
+    func record(_ flowGraph: SSHRouteFlowGraph) {
+        self.flowGraphs.append(flowGraph)
+    }
+
+    func recordedFlowGraphs() -> [SSHRouteFlowGraph] {
+        self.flowGraphs
+    }
+}
+
 actor SSHProxyJumpTransportQueue {
     private var transports: [any SSHByteStreamTransport]
 
@@ -1079,6 +1091,44 @@ func sshClientDirectConnectUsesRouteRootTransportFactory() async throws {
         await recorder.recordedRouteRootTransportFactoryEndpoints()
             == [SSHSocketEndpoint(host: "example.com", port: 22)]
     )
+    #expect(await transport.closeCountObserved() == 1)
+}
+
+@Test
+func sshClientScopedDirectRouteUsesStructuredRouteRootFlow() async throws {
+    let transport = try makeAuthenticatedClientFixtureTransport()
+    let recorder = SSHScopedRouteFlowRecorder()
+    let configuration = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("s3cr3t"),
+        hostKeyPolicy: .acceptAnyVerifiedHostKey
+    )
+
+    let metadata = try await SSHClient.withDirectRouteScopedConnection(
+        configuration: configuration,
+        logHandler: .disabled,
+        transportBackendPreference: .automatic,
+        modernTransportAvailable: true,
+        routeRootTransportRunner: { flowGraph, handler in
+            await recorder.record(flowGraph)
+            return try await handler(transport)
+        }
+    ) { connection in
+        connection.metadata
+    }
+
+    let flowGraph = try #require(await recorder.recordedFlowGraphs().first)
+
+    #expect(metadata.endpointHost == "example.com")
+    #expect(metadata.endpointPort == 22)
+    #expect(flowGraph.rootTransportPolicy.role == .structuredRouteRootConnection)
+    #expect(flowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
+    #expect(flowGraph.rootTransportPolicy.ownershipModel == .structuredScope)
+    #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .structuredScopeExit)
+    #expect(flowGraph.rootTransportPolicy.requiresDeterministicAbort)
+    #expect(!flowGraph.rootTransportPolicy.needsStructuredRouteOwnerForDeterministicAbort)
+    #expect(flowGraph.routeGraph.plan.rootEndpoint == SSHSocketEndpoint(host: "example.com", port: 22))
     #expect(await transport.closeCountObserved() == 1)
 }
 

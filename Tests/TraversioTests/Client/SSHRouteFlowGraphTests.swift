@@ -59,6 +59,32 @@ struct SSHRouteFlowGraphTests {
     }
 
     @Test
+    func structuredDirectRouteRootRecordsStructuredCloseEvidence() throws {
+        let endpoint = SSHSocketEndpoint(host: "server.example", port: 22)
+        let lifecycleGraph = SSHRouteLifecycleGraph(
+            plan: SSHRoutePlan(
+                finalEndpoint: endpoint,
+                connectionProxy: nil,
+                proxyJumpHosts: []
+            )
+        )
+
+        let flowGraph = SSHRouteFlowGraph(
+            routeGraph: lifecycleGraph,
+            rootTransportRole: .structuredRouteRootConnection,
+            transportBackendPreference: .automatic,
+            modernTransportAvailable: true
+        )
+
+        #expect(flowGraph.rootTransportPolicy.role == .structuredRouteRootConnection)
+        #expect(flowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
+        #expect(flowGraph.rootTransportPolicy.ownershipModel == .structuredScope)
+        #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(flowGraph.rootTransportPolicy.requiresDeterministicAbort)
+        #expect(flowGraph.edgesNeedingStructuredRouteOwner.isEmpty)
+    }
+
+    @Test
     func proxyJumpRouteLinksChannelsToParentConnectionsAndFinalTransport() throws {
         let hop = Self.makeProxyJumpHost(host: "jump.example", port: 22, username: "jump")
         let target = SSHSocketEndpoint(host: "server.example", port: 22)

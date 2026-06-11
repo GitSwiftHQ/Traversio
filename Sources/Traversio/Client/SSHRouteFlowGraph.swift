@@ -1,19 +1,36 @@
 struct SSHRouteFlowGraph: Sendable {
     let routeGraph: SSHRouteLifecycleGraph
+    let rootTransportRole: SSHTCPTransportFlowRole
     let transportBackendPreference: SSHTCPTransportBackendPreference
     let modernTransportAvailable: Bool
     let edges: [SSHRouteFlowEdge]
 
     init(
         routeGraph: SSHRouteLifecycleGraph,
+        rootTransportRole: SSHTCPTransportFlowRole = .routeRootConnection,
+        transportBackendPreference: SSHTCPTransportBackendPreference = .automatic
+    ) {
+        self.init(
+            routeGraph: routeGraph,
+            rootTransportRole: rootTransportRole,
+            transportBackendPreference: transportBackendPreference,
+            modernTransportAvailable: SSHTCPTransportFlowPolicy.isModernNetworkConnectionAvailable
+        )
+    }
+
+    init(
+        routeGraph: SSHRouteLifecycleGraph,
+        rootTransportRole: SSHTCPTransportFlowRole = .routeRootConnection,
         transportBackendPreference: SSHTCPTransportBackendPreference = .automatic,
         modernTransportAvailable: Bool
     ) {
         self.routeGraph = routeGraph
+        self.rootTransportRole = rootTransportRole
         self.transportBackendPreference = transportBackendPreference
         self.modernTransportAvailable = modernTransportAvailable
         self.edges = Self.buildEdges(
             routeGraph: routeGraph,
+            rootTransportRole: rootTransportRole,
             transportBackendPreference: transportBackendPreference,
             modernTransportAvailable: modernTransportAvailable
         )
@@ -47,6 +64,7 @@ struct SSHRouteFlowGraph: Sendable {
 
     private static func buildEdges(
         routeGraph: SSHRouteLifecycleGraph,
+        rootTransportRole: SSHTCPTransportFlowRole,
         transportBackendPreference: SSHTCPTransportBackendPreference,
         modernTransportAvailable: Bool
     ) -> [SSHRouteFlowEdge] {
@@ -56,6 +74,7 @@ struct SSHRouteFlowGraph: Sendable {
                 resource: self.resource(
                     for: edge,
                     routeGraph: routeGraph,
+                    rootTransportRole: rootTransportRole,
                     transportBackendPreference: transportBackendPreference,
                     modernTransportAvailable: modernTransportAvailable
                 )
@@ -66,6 +85,7 @@ struct SSHRouteFlowGraph: Sendable {
     private static func resource(
         for edge: SSHRouteLifecycleEdge,
         routeGraph: SSHRouteLifecycleGraph,
+        rootTransportRole: SSHTCPTransportFlowRole,
         transportBackendPreference: SSHTCPTransportBackendPreference,
         modernTransportAvailable: Bool
     ) -> SSHRouteFlowResource {
@@ -73,7 +93,7 @@ struct SSHRouteFlowGraph: Sendable {
         case .tcpRoot:
             return .tcpTransport(
                 SSHTCPTransportFlowPolicy.resolve(
-                    role: .routeRootConnection,
+                    role: rootTransportRole,
                     preference: transportBackendPreference,
                     modernAvailable: modernTransportAvailable
                 )

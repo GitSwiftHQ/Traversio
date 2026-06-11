@@ -192,7 +192,7 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
 
     package static func withConnected<Result>(
         to endpoint: SSHSocketEndpoint,
-        _ body: @escaping @Sendable (LegacyNetworkTCPByteStreamTransport) async throws -> Result
+        _ body: @escaping (LegacyNetworkTCPByteStreamTransport) async throws -> Result
     ) async throws -> Result {
         let transport = try await self.connect(to: endpoint)
 

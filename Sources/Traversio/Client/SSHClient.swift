@@ -41,7 +41,7 @@ public enum SSHClient {
         }
     }
 
-    private actor ConnectionSetupCleanup {
+    actor ConnectionSetupCleanup {
         private enum State {
             case waitingForTransport
             case acquiredTransport(SSHClientTransportHandle, connectionSetupStarted: Bool)
@@ -487,7 +487,7 @@ public enum SSHClient {
         try await connectionSetupBudget.withTimeout(operation)
     }
 
-    private static func makeConnection(
+    static func makeConnection(
         configuration: SSHClientConfiguration,
         endpoint: SSHSocketEndpoint,
         transportHandle: SSHClientTransportHandle,

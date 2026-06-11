@@ -57,6 +57,23 @@ struct SSHTCPTransportFlowPolicyTests {
     }
 
     @Test
+    func automaticStructuredRouteRootUsesModernScopeWhenModernIsAvailable() {
+        let policy = SSHTCPTransportFlowPolicy.resolve(
+            role: .structuredRouteRootConnection,
+            preference: .automatic,
+            modernAvailable: true
+        )
+
+        #expect(policy.selectedBackend == .modernNetworkConnection)
+        #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(policy.requiresDeterministicAbort)
+        #expect(policy.supportsDeterministicAbort)
+        #expect(policy.isSelectedBackendAvailable)
+        #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
+    }
+
+    @Test
     func explicitModernRouteRootRecordsMissingDeterministicAbortOwner() {
         let policy = SSHTCPTransportFlowPolicy.resolve(
             role: .routeRootConnection,
@@ -70,6 +87,22 @@ struct SSHTCPTransportFlowPolicyTests {
         #expect(policy.requiresDeterministicAbort)
         #expect(!policy.supportsDeterministicAbort)
         #expect(policy.needsStructuredRouteOwnerForDeterministicAbort)
+    }
+
+    @Test
+    func explicitModernStructuredRouteRootKeepsStructuredCloseEvidence() {
+        let policy = SSHTCPTransportFlowPolicy.resolve(
+            role: .structuredRouteRootConnection,
+            preference: .modern,
+            modernAvailable: true
+        )
+
+        #expect(policy.selectedBackend == .modernNetworkConnection)
+        #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(policy.requiresDeterministicAbort)
+        #expect(policy.supportsDeterministicAbort)
+        #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
     }
 
     @Test

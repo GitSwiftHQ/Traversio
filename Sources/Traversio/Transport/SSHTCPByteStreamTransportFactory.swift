@@ -53,13 +53,23 @@ package enum SSHTCPByteStreamTransportFactory {
     package static func withConnected<Result>(
         to endpoint: SSHSocketEndpoint,
         preference: SSHTCPTransportBackendPreference = .automatic,
-        _ body: @escaping @Sendable (any SSHByteStreamTransport) async throws -> Result
+        _ body: @escaping (any SSHByteStreamTransport) async throws -> Result
     ) async throws -> Result {
-        let policy = self.policy(
-            role: .scopedConnection,
-            preference: preference
+        try await self.withConnected(
+            to: endpoint,
+            policy: self.policy(
+                role: .scopedConnection,
+                preference: preference
+            ),
+            body
         )
+    }
 
+    package static func withConnected<Result>(
+        to endpoint: SSHSocketEndpoint,
+        policy: SSHTCPTransportFlowPolicy,
+        _ body: @escaping (any SSHByteStreamTransport) async throws -> Result
+    ) async throws -> Result {
         switch policy.selectedBackend {
         case .modernNetworkConnection:
             guard #available(

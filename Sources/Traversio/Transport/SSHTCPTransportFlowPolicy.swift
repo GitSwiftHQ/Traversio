@@ -11,6 +11,7 @@ package enum SSHTCPTransportBackendSelection: Equatable, Sendable {
 package enum SSHTCPTransportFlowRole: Equatable, Sendable {
     case ordinaryConnection
     case routeRootConnection
+    case structuredRouteRootConnection
     case scopedConnection
     case listener
     case lifecycleControlledListener
@@ -87,7 +88,7 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         )
     }
 
-    private static var isModernNetworkConnectionAvailable: Bool {
+    package static var isModernNetworkConnectionAvailable: Bool {
         if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
             return true
         }
@@ -109,7 +110,7 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             switch role {
             case .routeRootConnection, .lifecycleControlledListener:
                 return .legacyNWConnection
-            case .ordinaryConnection, .scopedConnection, .listener:
+            case .ordinaryConnection, .structuredRouteRootConnection, .scopedConnection, .listener:
                 return modernAvailable ? .modernNetworkConnection : .legacyNWConnection
             }
         }
@@ -124,7 +125,7 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             return .explicitCancellationHandle
         case .modernNetworkConnection:
             switch role {
-            case .scopedConnection, .listener, .lifecycleControlledListener:
+            case .structuredRouteRootConnection, .scopedConnection, .listener, .lifecycleControlledListener:
                 return .structuredScope
             case .ordinaryConnection, .routeRootConnection:
                 return .escapedConnectionHandle
@@ -149,7 +150,7 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         role: SSHTCPTransportFlowRole
     ) -> Bool {
         switch role {
-        case .routeRootConnection, .lifecycleControlledListener:
+        case .routeRootConnection, .structuredRouteRootConnection, .lifecycleControlledListener:
             true
         case .ordinaryConnection, .scopedConnection, .listener:
             false
