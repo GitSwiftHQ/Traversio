@@ -22,7 +22,9 @@ struct SSHRouteLifecycleGraphTests {
         #expect(graph.finalEdge.parentID == graph.rootEdge.id)
         #expect(graph.rootEdge.owner == .routeScope)
         #expect(graph.finalEdge.owner == .publicConnection)
+        #expect(graph.rootEdge.requirements.needsDeterministicAbort)
         #expect(graph.rootEdge.requirements.mayBeStructuredNetworkScopeRoot)
+        #expect(!graph.rootEdge.requirements.allowsGracefulDisconnect)
         #expect(graph.childBeforeParentTeardownOrder().map(\.id) == [
             graph.finalEdge.id,
             graph.rootEdge.id

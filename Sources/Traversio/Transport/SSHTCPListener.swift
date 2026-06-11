@@ -36,27 +36,14 @@ package enum SSHTCPListenerFactory {
         localPort: UInt16,
         preference: SSHTCPTransportBackendPreference = .automatic
     ) throws -> any SSHTCPListener {
-        switch preference {
-        case .automatic:
-            if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-                return try NetworkTCPListener(localHost: localHost, localPort: localPort)
-            }
-            return try LegacyNetworkTCPListener(localHost: localHost, localPort: localPort)
-        case .modern:
-            guard #available(
-                macOS 26.0,
-                iOS 26.0,
-                tvOS 26.0,
-                watchOS 26.0,
-                visionOS 26.0,
-                *
-            ) else {
-                throw self.unavailableModernListenerError()
-            }
-            return try NetworkTCPListener(localHost: localHost, localPort: localPort)
-        case .legacy:
-            return try LegacyNetworkTCPListener(localHost: localHost, localPort: localPort)
-        }
+        try self.makeListener(
+            localHost: localHost,
+            localPort: localPort,
+            policy: self.policy(
+                role: .listener,
+                preference: preference
+            )
+        )
     }
 
     package static func makeLifecycleControlledListener(
@@ -64,16 +51,14 @@ package enum SSHTCPListenerFactory {
         localPort: UInt16,
         preference: SSHTCPTransportBackendPreference = .automatic
     ) throws -> any SSHTCPListener {
-        switch preference {
-        case .automatic, .legacy:
-            return try LegacyNetworkTCPListener(localHost: localHost, localPort: localPort)
-        case .modern:
-            return try makeListener(
-                localHost: localHost,
-                localPort: localPort,
+        try self.makeListener(
+            localHost: localHost,
+            localPort: localPort,
+            policy: self.policy(
+                role: .lifecycleControlledListener,
                 preference: preference
             )
-        }
+        )
     }
 
     package static func listenerParameters(
@@ -92,6 +77,48 @@ package enum SSHTCPListenerFactory {
     private static func unavailableModernListenerError() -> SSHTransportError {
         SSHTransportError.unsupportedTransportBackend(
             "The modern Network listener backend requires Apple platform release 26 or newer."
+        )
+    }
+
+    private static func makeListener(
+        localHost: String,
+        localPort: UInt16,
+        policy: SSHTCPTransportFlowPolicy
+    ) throws -> any SSHTCPListener {
+        switch policy.selectedBackend {
+        case .modernNetworkConnection:
+            guard #available(
+                macOS 26.0,
+                iOS 26.0,
+                tvOS 26.0,
+                watchOS 26.0,
+                visionOS 26.0,
+                *
+            ) else {
+                throw self.unavailableModernListenerError()
+            }
+            return try NetworkTCPListener(localHost: localHost, localPort: localPort)
+        case .legacyNWConnection:
+            return try LegacyNetworkTCPListener(localHost: localHost, localPort: localPort)
+        }
+    }
+
+    private static func policy(
+        role: SSHTCPTransportFlowRole,
+        preference: SSHTCPTransportBackendPreference
+    ) -> SSHTCPTransportFlowPolicy {
+        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
+            return SSHTCPTransportFlowPolicy.resolve(
+                role: role,
+                preference: preference,
+                modernAvailable: true
+            )
+        }
+
+        return SSHTCPTransportFlowPolicy.resolve(
+            role: role,
+            preference: preference,
+            modernAvailable: false
         )
     }
 }

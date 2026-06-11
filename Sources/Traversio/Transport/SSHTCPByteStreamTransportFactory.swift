@@ -15,18 +15,53 @@ package enum SSHTCPByteStreamTransportFactory {
         to endpoint: SSHSocketEndpoint,
         preference: SSHTCPTransportBackendPreference = .automatic
     ) async throws -> SSHClientTransportHandle {
-        switch preference {
-        case .automatic:
-            if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-                return SSHClientTransportHandle(
-                    transport: try NetworkTCPByteStreamTransport.connect(to: endpoint)
-                )
-            }
-
-            return SSHClientTransportHandle(
-                transport: try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
+        try await self.makeTransportHandle(
+            to: endpoint,
+            policy: self.policy(
+                role: .ordinaryConnection,
+                preference: preference
             )
-        case .modern:
+        )
+    }
+
+    static func makeRouteRootTransportHandle(
+        to endpoint: SSHSocketEndpoint,
+        preference: SSHTCPTransportBackendPreference = .automatic
+    ) async throws -> SSHClientTransportHandle {
+        try await self.makeTransportHandle(
+            to: endpoint,
+            policy: self.policy(
+                role: .routeRootConnection,
+                preference: preference
+            )
+        )
+    }
+
+    package static func connect(
+        to endpoint: SSHSocketEndpoint,
+        preference: SSHTCPTransportBackendPreference = .automatic
+    ) async throws -> any SSHByteStreamTransport {
+        try await self.makeTransport(
+            to: endpoint,
+            policy: self.policy(
+                role: .ordinaryConnection,
+                preference: preference
+            )
+        )
+    }
+
+    package static func withConnected<Result>(
+        to endpoint: SSHSocketEndpoint,
+        preference: SSHTCPTransportBackendPreference = .automatic,
+        _ body: @escaping @Sendable (any SSHByteStreamTransport) async throws -> Result
+    ) async throws -> Result {
+        let policy = self.policy(
+            role: .scopedConnection,
+            preference: preference
+        )
+
+        switch policy.selectedBackend {
+        case .modernNetworkConnection:
             guard #available(
                 macOS 26.0,
                 iOS 26.0,
@@ -37,45 +72,33 @@ package enum SSHTCPByteStreamTransportFactory {
             ) else {
                 throw self.unavailableModernTransportError()
             }
-            return SSHClientTransportHandle(
-                transport: try NetworkTCPByteStreamTransport.connect(to: endpoint)
-            )
-        case .legacy:
-            return SSHClientTransportHandle(
-                transport: try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
-            )
-        }
-    }
-
-    static func makeRouteRootTransportHandle(
-        to endpoint: SSHSocketEndpoint,
-        preference: SSHTCPTransportBackendPreference = .automatic
-    ) async throws -> SSHClientTransportHandle {
-        switch preference {
-        case .automatic, .legacy:
-            return SSHClientTransportHandle(
-                transport: try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
-            )
-        case .modern:
-            return try await self.makeTransportHandle(
-                to: endpoint,
-                preference: preference
-            )
-        }
-    }
-
-    package static func connect(
-        to endpoint: SSHSocketEndpoint,
-        preference: SSHTCPTransportBackendPreference = .automatic
-    ) async throws -> any SSHByteStreamTransport {
-        switch preference {
-        case .automatic:
-            if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-                return try NetworkTCPByteStreamTransport.connect(to: endpoint)
+            return try await NetworkTCPByteStreamTransport.withConnected(to: endpoint) {
+                transport in
+                try await body(transport)
             }
+        case .legacyNWConnection:
+            return try await LegacyNetworkTCPByteStreamTransport.withConnected(to: endpoint) {
+                transport in
+                try await body(transport)
+            }
+        }
+    }
 
-            return try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
-        case .modern:
+    private static func makeTransportHandle(
+        to endpoint: SSHSocketEndpoint,
+        policy: SSHTCPTransportFlowPolicy
+    ) async throws -> SSHClientTransportHandle {
+        SSHClientTransportHandle(
+            transport: try await self.makeTransport(to: endpoint, policy: policy)
+        )
+    }
+
+    private static func makeTransport(
+        to endpoint: SSHSocketEndpoint,
+        policy: SSHTCPTransportFlowPolicy
+    ) async throws -> any SSHByteStreamTransport {
+        switch policy.selectedBackend {
+        case .modernNetworkConnection:
             guard #available(
                 macOS 26.0,
                 iOS 26.0,
@@ -87,51 +110,28 @@ package enum SSHTCPByteStreamTransportFactory {
                 throw self.unavailableModernTransportError()
             }
             return try NetworkTCPByteStreamTransport.connect(to: endpoint)
-        case .legacy:
+        case .legacyNWConnection:
             return try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
         }
     }
 
-    package static func withConnected<Result>(
-        to endpoint: SSHSocketEndpoint,
-        preference: SSHTCPTransportBackendPreference = .automatic,
-        _ body: @escaping @Sendable (any SSHByteStreamTransport) async throws -> Result
-    ) async throws -> Result {
-        switch preference {
-        case .automatic:
-            if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-                return try await NetworkTCPByteStreamTransport.withConnected(to: endpoint) {
-                    transport in
-                    try await body(transport)
-                }
-            }
-
-            return try await LegacyNetworkTCPByteStreamTransport.withConnected(to: endpoint) {
-                transport in
-                try await body(transport)
-            }
-        case .modern:
-            guard #available(
-                macOS 26.0,
-                iOS 26.0,
-                tvOS 26.0,
-                watchOS 26.0,
-                visionOS 26.0,
-                *
-            ) else {
-                throw self.unavailableModernTransportError()
-            }
-
-            return try await NetworkTCPByteStreamTransport.withConnected(to: endpoint) {
-                transport in
-                try await body(transport)
-            }
-        case .legacy:
-            return try await LegacyNetworkTCPByteStreamTransport.withConnected(to: endpoint) {
-                transport in
-                try await body(transport)
-            }
+    private static func policy(
+        role: SSHTCPTransportFlowRole,
+        preference: SSHTCPTransportBackendPreference
+    ) -> SSHTCPTransportFlowPolicy {
+        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
+            return SSHTCPTransportFlowPolicy.resolve(
+                role: role,
+                preference: preference,
+                modernAvailable: true
+            )
         }
+
+        return SSHTCPTransportFlowPolicy.resolve(
+            role: role,
+            preference: preference,
+            modernAvailable: false
+        )
     }
 
     private static func unavailableModernTransportError() -> SSHTransportError {
