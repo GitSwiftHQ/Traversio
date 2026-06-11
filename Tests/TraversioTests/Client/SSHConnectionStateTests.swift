@@ -13,7 +13,8 @@ func connectionStateEventsReportNetworkPathChangesAndProbeRecovery() async throw
         .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
     )
     let transport = try makeAuthenticatedConnectionStateFixtureTransport(
-        additionalServerPayloads: [requestSuccessPayload]
+        additionalServerPayloads: [requestSuccessPayload],
+        initialNetworkPath: .cellularUnsatisfied
     )
     let connection = try await makeFixtureConnection(transport: transport)
     let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
@@ -21,6 +22,10 @@ func connectionStateEventsReportNetworkPathChangesAndProbeRecovery() async throw
     let connectedEvent = try await nextConnectionStateEvent(from: collector)
     #expect(connectedEvent?.trigger == .connected)
     #expect(connectedEvent?.snapshot.state == .ready)
+
+    let initialPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(initialPathEvent?.trigger == .networkPathChanged)
+    #expect(initialPathEvent?.snapshot.networkPath?.status == .unsatisfied)
 
     await transport.emitPathChanged(
         SSHTransportNetworkPath(
@@ -47,6 +52,28 @@ func connectionStateEventsReportNetworkPathChangesAndProbeRecovery() async throw
     #expect(probeEvent?.trigger == .proactiveLivenessCheckSucceeded)
     #expect(probeEvent?.snapshot.state == .ready)
     #expect(probeEvent?.snapshot.detail == nil)
+
+    await connection.close()
+}
+
+@Test
+func connectionStateFirstPathObservationRecordsWithoutProbe() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    let connectedEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(connectedEvent?.trigger == .connected)
+
+    let sentPayloadCountBeforePathObservation = await transport.sentPayloadCount()
+    await transport.emitPathChanged(.cellularSatisfied)
+
+    let pathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(pathEvent?.trigger == .networkPathChanged)
+    #expect(pathEvent?.snapshot.networkPath?.status == .satisfied)
+
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await transport.sentPayloadCount() == sentPayloadCountBeforePathObservation)
 
     await connection.close()
 }
@@ -91,11 +118,15 @@ func connectionCurrentNetworkPathReportsInitialTransportSnapshotWithoutProbe() a
 
 @Test
 func connectionStateEventsReportLostWhenNetworkTransitionProbeFails() async throws {
-    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        initialNetworkPath: .cellularUnsatisfied
+    )
     let connection = try await makeFixtureConnection(transport: transport)
     let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
 
     _ = try await nextConnectionStateEvent(from: collector)
+    let initialPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(initialPathEvent?.trigger == .networkPathChanged)
 
     await transport.enqueueSendFailure(.EPIPE)
     await transport.emitPathChanged(
@@ -134,11 +165,13 @@ func connectionStateEventsReportLostWhenNetworkTransitionProbeFails() async thro
 @Test
 func connectionStatePathFlapDoesNotTreatCancelledProbeAsBackgroundFailure() async throws {
     let transport = try makeAuthenticatedConnectionStateFixtureTransport(
-        emptyReceiveBehavior: .waitForAppendedChunks
+        emptyReceiveBehavior: .waitForAppendedChunks,
+        initialNetworkPath: .cellularUnsatisfied
     )
     let connection = try await makeFixtureConnection(transport: transport)
     let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
 
+    _ = try await nextConnectionStateEvent(from: collector)
     _ = try await nextConnectionStateEvent(from: collector)
 
     let baselineSentCount = await transport.sentPayloadCount()
@@ -155,7 +188,7 @@ func connectionStatePathFlapDoesNotTreatCancelledProbeAsBackgroundFailure() asyn
         }
     )
 
-    await transport.emitPathChanged(.cellularSatisfied)
+    await transport.emitPathChanged(.wifiSatisfied)
 
     let secondPathEvent = try await nextConnectionStateEvent(from: collector)
     #expect(secondPathEvent?.trigger == .networkPathChanged)
@@ -188,12 +221,16 @@ func closingConnectionPublishesClosedStateEvent() async throws {
 
 @Test
 func backgroundFailureCloseReleasesConnectionLifecycleReferences() async throws {
-    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        initialNetworkPath: .cellularUnsatisfied
+    )
     var connection: SSHConnection? = try await makeFixtureConnection(transport: transport)
     let probe = connection!.lifecycleRetainProbe()
     let collector = ConnectionStateEventCollector(sequence: connection!.stateEvents)
 
     _ = try await nextConnectionStateEvent(from: collector)
+    let initialPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(initialPathEvent?.trigger == .networkPathChanged)
 
     await transport.enqueueSendFailure(.EPIPE)
     await transport.emitPathChanged(
@@ -245,6 +282,91 @@ func connectionInstallsTransportObservationBeforeProtocolTraffic() async throws 
     let connection = try await makeFixtureConnection(transport: transport)
 
     #expect(await transport.sendCountBeforeObservationInstall() == 0)
+
+    await connection.close()
+}
+
+@Test
+func connectionStateInitialViabilityAndBetterPathObservationsRecordWithoutProbe() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    let sentPayloadCountBeforeObservations = await transport.sentPayloadCount()
+    await transport.emitViabilityChanged(true)
+
+    let viabilityEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(viabilityEvent?.trigger == .transportViabilityChanged)
+    #expect(viabilityEvent?.snapshot.isTransportViable == true)
+
+    await transport.emitBetterPathAvailable(true)
+
+    let betterPathEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(betterPathEvent?.trigger == .betterPathAvailable)
+    #expect(betterPathEvent?.snapshot.betterPathAvailable == true)
+
+    try? await Task.sleep(nanoseconds: 50_000_000)
+    #expect(await transport.sentPayloadCount() == sentPayloadCountBeforeObservations)
+
+    await connection.close()
+}
+
+@Test
+func connectionStateViabilityRecoveryProbesAfterBaseline() async throws {
+    let requestSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+    )
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        additionalServerPayloads: [requestSuccessPayload]
+    )
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    await transport.emitViabilityChanged(false)
+    let downEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(downEvent?.trigger == .transportViabilityChanged)
+    #expect(downEvent?.snapshot.isTransportViable == false)
+
+    await transport.emitViabilityChanged(true)
+    let upEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(upEvent?.trigger == .transportViabilityChanged)
+    #expect(upEvent?.snapshot.isTransportViable == true)
+
+    let probeEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(probeEvent?.trigger == .proactiveLivenessCheckSucceeded)
+
+    await connection.close()
+}
+
+@Test
+func connectionStateBetterPathTransitionProbesAfterBaseline() async throws {
+    let requestSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+    )
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport(
+        additionalServerPayloads: [requestSuccessPayload]
+    )
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    await transport.emitBetterPathAvailable(false)
+    let unavailableEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(unavailableEvent?.trigger == .betterPathAvailable)
+    #expect(unavailableEvent?.snapshot.betterPathAvailable == false)
+
+    await transport.emitBetterPathAvailable(true)
+    let availableEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(availableEvent?.trigger == .betterPathAvailable)
+    #expect(availableEvent?.snapshot.betterPathAvailable == true)
+
+    let probeEvent = try await nextConnectionStateEvent(from: collector)
+    #expect(probeEvent?.trigger == .proactiveLivenessCheckSucceeded)
 
     await connection.close()
 }
@@ -345,6 +467,14 @@ private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport
 
     func emitPathChanged(_ path: SSHTransportNetworkPath) {
         self.observationHandler?(.networkPathChanged(path))
+    }
+
+    func emitViabilityChanged(_ isViable: Bool) {
+        self.observationHandler?(.viabilityChanged(isViable))
+    }
+
+    func emitBetterPathAvailable(_ hasBetterPath: Bool) {
+        self.observationHandler?(.betterPathAvailable(hasBetterPath))
     }
 
     func emitStateChanged(_ state: SSHTransportObservedState, detail: String?) {
@@ -476,6 +606,17 @@ private func makeAuthenticatedConnectionStateFixtureTransport(
 }
 
 private extension SSHTransportNetworkPath {
+    static let cellularUnsatisfied = SSHTransportNetworkPath(
+        status: .unsatisfied,
+        availableInterfaces: [.cellular],
+        isExpensive: true,
+        isConstrained: false,
+        isUltraConstrained: false,
+        supportsIPv4: true,
+        supportsIPv6: false,
+        linkQuality: .minimal
+    )
+
     static let cellularSatisfied = SSHTransportNetworkPath(
         status: .satisfied,
         availableInterfaces: [.other, .other],
@@ -485,5 +626,16 @@ private extension SSHTransportNetworkPath {
         supportsIPv4: true,
         supportsIPv6: false,
         linkQuality: .moderate
+    )
+
+    static let wifiSatisfied = SSHTransportNetworkPath(
+        status: .satisfied,
+        availableInterfaces: [.wifi],
+        isExpensive: false,
+        isConstrained: false,
+        isUltraConstrained: false,
+        supportsIPv4: true,
+        supportsIPv6: true,
+        linkQuality: .good
     )
 }

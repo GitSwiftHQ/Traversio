@@ -354,6 +354,7 @@ package actor SSHConnectionStateCoordinator {
             }
         case let .networkPathChanged(networkPath):
             let path = Self.connectionNetworkPath(from: networkPath)
+            let previousPath = self.snapshot.networkPath
             self.snapshot = SSHConnectionStateSnapshot(
                 state: self.classifiedState(
                     transportState: self.snapshot.transportState,
@@ -368,9 +369,13 @@ package actor SSHConnectionStateCoordinator {
                 detail: self.snapshot.detail
             )
             trigger = .networkPathChanged
-            shouldProbe = path.status == .satisfied
+            shouldProbe = Self.shouldProbeNetworkPathTransition(
+                from: previousPath,
+                to: path
+            )
             terminalObservationFailure = nil
         case let .viabilityChanged(isTransportViable):
+            let previousViability = self.snapshot.isTransportViable
             self.snapshot = SSHConnectionStateSnapshot(
                 state: self.classifiedState(
                     transportState: self.snapshot.transportState,
@@ -385,9 +390,13 @@ package actor SSHConnectionStateCoordinator {
                 detail: self.snapshot.detail
             )
             trigger = .transportViabilityChanged
-            shouldProbe = isTransportViable
+            shouldProbe = Self.shouldProbeViabilityTransition(
+                from: previousViability,
+                to: isTransportViable
+            )
             terminalObservationFailure = nil
         case let .betterPathAvailable(hasBetterPath):
+            let previousBetterPathAvailable = self.snapshot.betterPathAvailable
             self.snapshot = SSHConnectionStateSnapshot(
                 state: self.classifiedState(
                     transportState: self.snapshot.transportState,
@@ -402,7 +411,10 @@ package actor SSHConnectionStateCoordinator {
                 detail: self.snapshot.detail
             )
             trigger = .betterPathAvailable
-            shouldProbe = hasBetterPath
+            shouldProbe = Self.shouldProbeBetterPathTransition(
+                from: previousBetterPathAvailable,
+                to: hasBetterPath
+            )
             terminalObservationFailure = nil
         }
 
@@ -570,6 +582,39 @@ package actor SSHConnectionStateCoordinator {
         case .other:
             return .other
         }
+    }
+
+    private static func shouldProbeNetworkPathTransition(
+        from previous: SSHConnectionNetworkPath?,
+        to current: SSHConnectionNetworkPath
+    ) -> Bool {
+        guard let previous, previous != current else {
+            return false
+        }
+
+        return current.status == .satisfied
+    }
+
+    private static func shouldProbeViabilityTransition(
+        from previous: Bool?,
+        to current: Bool
+    ) -> Bool {
+        guard let previous else {
+            return false
+        }
+
+        return !previous && current
+    }
+
+    private static func shouldProbeBetterPathTransition(
+        from previous: Bool?,
+        to current: Bool
+    ) -> Bool {
+        guard let previous else {
+            return false
+        }
+
+        return !previous && current
     }
 }
 
