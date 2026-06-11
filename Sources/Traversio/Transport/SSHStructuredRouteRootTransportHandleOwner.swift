@@ -72,7 +72,6 @@ final class SSHStructuredRouteRootTransportHandleOwner<
 
     func abort() async {
         self.scopeGate.close()
-        self.taskBox.cancel()
         await self.taskBox.waitUntilFinished()
     }
 

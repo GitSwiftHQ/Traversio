@@ -59,6 +59,34 @@ struct SSHStructuredRouteRootTransportHandleOwnerTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func ownerDoesNotCancelRunnerWhenPublishedHandleAborts() async throws {
+        let log = RouteRootOwnerTestLog()
+        let transport = RouteRootOwnerTestTransport(log: log)
+        let owner = SSHStructuredRouteRootTransportHandleOwner<RouteRootOwnerTestTransport> {
+            handler in
+            await log.record(.runnerEntered)
+            try await handler(transport)
+            do {
+                try await Task.sleep(nanoseconds: 10_000_000)
+            } catch {
+                await log.record(.runnerCancelled)
+            }
+            await log.record(.runnerExited)
+        }
+
+        let handle = try await owner.makeHandle()
+        await handle.abort()
+
+        #expect(
+            await log.events() == [
+                .runnerEntered,
+                .transportAborted,
+                .runnerExited
+            ]
+        )
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func ownerCancelsRunnerWhenHandleAcquisitionIsCancelled() async throws {
         let log = RouteRootOwnerTestLog()
         let owner = SSHStructuredRouteRootTransportHandleOwner<RouteRootOwnerTestTransport> {
