@@ -1124,7 +1124,7 @@ func sshClientScopedDirectRouteUsesStructuredRouteRootFlow() async throws {
     #expect(metadata.endpointPort == 22)
     #expect(flowGraph.rootTransportPolicy.role == .structuredRouteRootConnection)
     #expect(flowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
-    #expect(flowGraph.rootTransportPolicy.ownershipModel == .structuredScope)
+    #expect(flowGraph.rootTransportPolicy.ownershipModel == .callerOwnedStructuredScope)
     #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .structuredScopeExit)
     #expect(flowGraph.rootTransportPolicy.requiresDeterministicAbort)
     #expect(!flowGraph.rootTransportPolicy.needsStructuredRouteOwnerForDeterministicAbort)

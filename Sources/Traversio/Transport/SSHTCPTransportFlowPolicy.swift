@@ -19,7 +19,8 @@ package enum SSHTCPTransportFlowRole: Equatable, Sendable {
 
 package enum SSHTCPTransportOwnershipModel: Equatable, Sendable {
     case explicitCancellationHandle
-    case structuredScope
+    case callerOwnedStructuredScope
+    case libraryOwnedStructuredScope
     case escapedConnectionHandle
 }
 
@@ -155,9 +156,11 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             return .explicitCancellationHandle
         case .modernNetworkConnection:
             switch role {
+            case .routeRootConnection:
+                return .libraryOwnedStructuredScope
             case .structuredRouteRootConnection, .scopedConnection, .listener, .lifecycleControlledListener:
-                return .structuredScope
-            case .ordinaryConnection, .routeRootConnection:
+                return .callerOwnedStructuredScope
+            case .ordinaryConnection:
                 return .escapedConnectionHandle
             }
         }
@@ -169,7 +172,7 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         switch ownershipModel {
         case .explicitCancellationHandle:
             .explicitCancellation
-        case .structuredScope:
+        case .callerOwnedStructuredScope, .libraryOwnedStructuredScope:
             .structuredScopeExit
         case .escapedConnectionHandle:
             .referenceReleaseOnly

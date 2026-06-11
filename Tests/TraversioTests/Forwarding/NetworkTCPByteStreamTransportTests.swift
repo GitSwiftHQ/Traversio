@@ -46,6 +46,43 @@ func networkTCPByteStreamTransportCloseReturnsPromptlyWhilePeerStaysOpen() async
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 @Test
+func explicitModernRouteRootTransportHandleCloseReleasesStructuredScope() async throws {
+    let server = try await HangingPeerTCPServer.start()
+    defer {
+        server.stop()
+    }
+
+    let handle = try await SSHTCPByteStreamTransportFactory.makeRouteRootTransportHandle(
+        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port),
+        preference: .modern
+    )
+    try await handle.transport.send(Array("PING".utf8), endOfStream: false)
+    await server.waitForAcceptedConnection()
+
+    let closeTask = Task {
+        await handle.close()
+        return true
+    }
+
+    let didFinishClose = await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await closeTask.value
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            return false
+        }
+
+        let firstResult = await group.next() ?? false
+        group.cancelAll()
+        return firstResult
+    }
+
+    #expect(didFinishClose)
+}
+
+@available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+@Test
 func networkTCPByteStreamTransportCloseStateClaimsEndOfStreamOnce() {
     let closeState = NetworkTCPByteStreamTransport.CloseState()
 

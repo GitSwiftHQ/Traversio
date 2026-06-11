@@ -37,7 +37,7 @@ struct SSHTCPTransportFlowPolicyTests {
         )
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.ownershipModel == .callerOwnedStructuredScope)
         #expect(policy.terminalCloseEvidence == .structuredScopeExit)
         #expect(policy.operationCancellationIsolation == .canIgnoreCallerCancellation)
         #expect(!policy.requiresDeterministicAbort)
@@ -78,7 +78,7 @@ struct SSHTCPTransportFlowPolicyTests {
         )
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.ownershipModel == .callerOwnedStructuredScope)
         #expect(policy.terminalCloseEvidence == .structuredScopeExit)
         #expect(policy.requiresDeterministicAbort)
         #expect(policy.supportsDeterministicAbort)
@@ -91,7 +91,7 @@ struct SSHTCPTransportFlowPolicyTests {
     }
 
     @Test
-    func explicitModernRouteRootRecordsMissingDeterministicAbortOwner() {
+    func explicitModernRouteRootUsesLibraryOwnedStructuredScope() {
         let policy = SSHTCPTransportFlowPolicy.resolve(
             role: .routeRootConnection,
             preference: .modern,
@@ -99,15 +99,15 @@ struct SSHTCPTransportFlowPolicyTests {
         )
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .escapedConnectionHandle)
-        #expect(policy.terminalCloseEvidence == .referenceReleaseOnly)
+        #expect(policy.ownershipModel == .libraryOwnedStructuredScope)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
         #expect(policy.requiresDeterministicAbort)
-        #expect(!policy.supportsDeterministicAbort)
+        #expect(policy.supportsDeterministicAbort)
         #expect(policy.requiresSharedProtocolReceiveCancellationIsolation)
         #expect(policy.supportsSharedProtocolReceiveCancellationIsolation)
-        #expect(policy.needsStructuredRouteOwnerForDeterministicAbort)
+        #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
         #expect(!policy.needsSharedProtocolReceiveCancellationIsolation)
-        #expect(!policy.satisfiesLongLivedRouteRootRequirements)
+        #expect(policy.satisfiesLongLivedRouteRootRequirements)
     }
 
     @Test
@@ -119,7 +119,7 @@ struct SSHTCPTransportFlowPolicyTests {
         )
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.ownershipModel == .callerOwnedStructuredScope)
         #expect(policy.terminalCloseEvidence == .structuredScopeExit)
         #expect(policy.requiresDeterministicAbort)
         #expect(policy.supportsDeterministicAbort)

@@ -79,7 +79,7 @@ struct SSHForwardingFlowGraphTests {
         #expect(acceptedChannelEdge.parentID == acceptLoopEdge.id)
         #expect(bridgeLocalTransportPolicy.role == .scopedConnection)
         #expect(bridgeLocalTransportPolicy.selectedBackend == .modernNetworkConnection)
-        #expect(bridgeLocalTransportPolicy.ownershipModel == .structuredScope)
+        #expect(bridgeLocalTransportPolicy.ownershipModel == .callerOwnedStructuredScope)
         #expect(bridgeLocalTransportEdge.parentID == acceptedChannelEdge.id)
         #expect(bridgeTaskEdge.parentID == bridgeLocalTransportEdge.id)
         #expect(graph.childBeforeParentTeardownOrder.last == graph.parentConnectionEdgeID)

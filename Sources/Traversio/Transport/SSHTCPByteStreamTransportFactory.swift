@@ -98,7 +98,23 @@ package enum SSHTCPByteStreamTransportFactory {
         to endpoint: SSHSocketEndpoint,
         policy: SSHTCPTransportFlowPolicy
     ) async throws -> SSHClientTransportHandle {
-        SSHClientTransportHandle(
+        if policy.ownershipModel == .libraryOwnedStructuredScope {
+            guard #available(
+                macOS 26.0,
+                iOS 26.0,
+                tvOS 26.0,
+                watchOS 26.0,
+                visionOS 26.0,
+                *
+            ) else {
+                throw self.unavailableModernTransportError()
+            }
+            return try await NetworkTCPByteStreamTransport.makeRouteRootTransportHandle(
+                to: endpoint
+            )
+        }
+
+        return SSHClientTransportHandle(
             transport: try await self.makeTransport(to: endpoint, policy: policy)
         )
     }

@@ -25,8 +25,10 @@ struct SSHConnectionFlowGraph: Sendable {
         switch policy.ownershipModel {
         case .explicitCancellationHandle:
             return .explicitCancellationHandle
-        case .structuredScope:
-            return .structuredScope
+        case .callerOwnedStructuredScope:
+            return .callerOwnedStructuredScope
+        case .libraryOwnedStructuredScope:
+            return .libraryOwnedStructuredScope
         case .escapedConnectionHandle:
             if policy.needsStructuredRouteOwnerForDeterministicAbort {
                 return .escapedConnectionHandleMissingStructuredOwner
@@ -45,7 +47,7 @@ struct SSHConnectionFlowGraph: Sendable {
         if policy.needsSharedProtocolReceiveCancellationIsolation {
             problems.insert(.missingSharedProtocolReceiveCancellationIsolation)
         }
-        if policy.ownershipModel == .structuredScope {
+        if policy.ownershipModel == .callerOwnedStructuredScope {
             problems.insert(.callerOwnedStructuredRouteScope)
         }
 
@@ -57,7 +59,7 @@ struct SSHConnectionFlowGraph: Sendable {
     }
 
     var structuredRootScopeExitOrder: [SSHConnectionFlowResource] {
-        guard self.rootTransportOwnership == .structuredScope else {
+        guard self.rootTransportOwnership.participatesInStructuredRootScopeExit else {
             return []
         }
 
@@ -87,7 +89,8 @@ struct SSHConnectionFlowGraph: Sendable {
 
 enum SSHConnectionRootTransportOwnership: Equatable, Sendable {
     case explicitCancellationHandle
-    case structuredScope
+    case callerOwnedStructuredScope
+    case libraryOwnedStructuredScope
     case escapedConnectionHandle
     case escapedConnectionHandleMissingStructuredOwner
 }
@@ -104,6 +107,19 @@ enum SSHConnectionFlowResource: Equatable, Sendable {
         forwardingKind: SSHForwardingFlowKind,
         resourceKind: SSHForwardingFlowResourceKind
     )
+}
+
+private extension SSHConnectionRootTransportOwnership {
+    var participatesInStructuredRootScopeExit: Bool {
+        switch self {
+        case .callerOwnedStructuredScope, .libraryOwnedStructuredScope:
+            return true
+        case .explicitCancellationHandle,
+             .escapedConnectionHandle,
+             .escapedConnectionHandleMissingStructuredOwner:
+            return false
+        }
+    }
 }
 
 private extension SSHForwardingFlowResourceKind {

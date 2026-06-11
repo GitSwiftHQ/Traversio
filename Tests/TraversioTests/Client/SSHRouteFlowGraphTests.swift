@@ -33,7 +33,7 @@ struct SSHRouteFlowGraphTests {
     }
 
     @Test
-    func explicitModernDirectRouteRecordsStructuredOwnerGapOnRootEdge() throws {
+    func explicitModernDirectRouteRecordsLibraryOwnedStructuredRootEdge() throws {
         let endpoint = SSHSocketEndpoint(host: "server.example", port: 22)
         let lifecycleGraph = SSHRouteLifecycleGraph(
             plan: SSHRoutePlan(
@@ -50,12 +50,10 @@ struct SSHRouteFlowGraphTests {
         )
 
         #expect(flowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
-        #expect(flowGraph.rootTransportPolicy.ownershipModel == .escapedConnectionHandle)
-        #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .referenceReleaseOnly)
-        #expect(flowGraph.rootTransportPolicy.needsStructuredRouteOwnerForDeterministicAbort)
-        #expect(flowGraph.edgesNeedingStructuredRouteOwner.map(\.id) == [
-            lifecycleGraph.rootEdge.id
-        ])
+        #expect(flowGraph.rootTransportPolicy.ownershipModel == .libraryOwnedStructuredScope)
+        #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(!flowGraph.rootTransportPolicy.needsStructuredRouteOwnerForDeterministicAbort)
+        #expect(flowGraph.edgesNeedingStructuredRouteOwner.isEmpty)
     }
 
     @Test
@@ -78,7 +76,7 @@ struct SSHRouteFlowGraphTests {
 
         #expect(flowGraph.rootTransportPolicy.role == .structuredRouteRootConnection)
         #expect(flowGraph.rootTransportPolicy.selectedBackend == .modernNetworkConnection)
-        #expect(flowGraph.rootTransportPolicy.ownershipModel == .structuredScope)
+        #expect(flowGraph.rootTransportPolicy.ownershipModel == .callerOwnedStructuredScope)
         #expect(flowGraph.rootTransportPolicy.terminalCloseEvidence == .structuredScopeExit)
         #expect(flowGraph.rootTransportPolicy.requiresDeterministicAbort)
         #expect(flowGraph.edgesNeedingStructuredRouteOwner.isEmpty)

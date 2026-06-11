@@ -245,6 +245,15 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
         return NetworkTCPByteStreamTransport(connection: connection)
     }
 
+    static func makeRouteRootTransportHandle(
+        to endpoint: SSHSocketEndpoint
+    ) async throws -> SSHClientTransportHandle {
+        let owner = SSHStructuredRouteRootTransportHandleOwner<Self> { handler in
+            try await self.withConnected(to: endpoint, handler)
+        }
+        return try await owner.makeHandle()
+    }
+
     package static func withConnected<Result>(
         to endpoint: SSHSocketEndpoint,
         _ body: (NetworkTCPByteStreamTransport) async throws -> Result
