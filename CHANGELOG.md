@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 1.0.5 - 2026-06-11
+
+Network path observation:
+
+- The modern 26+ `NetworkConnection<TCP>` transport now emits Network.framework
+  path, viability, and better-path observations through Traversio connection
+  state events, matching the compatibility backend's existing observation
+  surface.
+- `SSHConnection.networkPath` exposes the latest active transport path snapshot,
+  including expensive, constrained, ultra-constrained, interface, IP-family, and
+  link-quality fields when the selected backend reports them.
+- Traversio captures the initial backend path after connection setup without
+  starting an extra liveness probe. Subsequent satisfied path and better-path
+  events still use the existing lightweight liveness probe to classify whether
+  the SSH connection is still usable.
+- Connection-state logs now include ultra-constrained path and link-quality
+  metadata. These are observational diagnostics; Traversio does not promise
+  transparent shell or PTY continuity across server-owned connection loss.
+
 ## 1.0.4 - 2026-06-10
 
 Network transition fix:
