@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 1.0.6 - 2026-06-11
+
+Network lifecycle hardening:
+
+- Direct and ProxyJump route ownership now uses explicit TCP backend flow
+  policies for route roots, scoped routes, listeners, and forwarding bridge
+  resources. The automatic default keeps handle-owned route roots on the
+  conservative legacy `NWConnection` backend while explicit modern route roots
+  use a library-owned structured `NetworkConnection<TCP>` scope.
+- Shared request/reply receives used by global requests and channel requests no
+  longer let caller cancellation cancel the underlying transport receive after
+  the request has been sent. Explicit response timeouts still bound those waits.
+- Modern route-root abort now releases the structured scope without also
+  cancelling the published owner task, reducing duplicate Network.framework
+  cancel logs on explicit-modern failed setup paths.
+- Initial Network.framework path, viability, and better-path callbacks establish
+  the diagnostic baseline without starting a proactive liveness probe. Probes
+  now run only after a real recovery transition.
+
 ## 1.0.5 - 2026-06-11
 
 Network path observation:
