@@ -107,18 +107,9 @@ package enum SSHTCPListenerFactory {
         role: SSHTCPTransportFlowRole,
         preference: SSHTCPTransportBackendPreference
     ) -> SSHTCPTransportFlowPolicy {
-        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
-            return SSHTCPTransportFlowPolicy.resolve(
-                role: role,
-                preference: preference,
-                modernAvailable: true
-            )
-        }
-
-        return SSHTCPTransportFlowPolicy.resolve(
+        SSHTCPTransportFlowPolicy.resolveCurrentPlatform(
             role: role,
-            preference: preference,
-            modernAvailable: false
+            preference: preference
         )
     }
 }

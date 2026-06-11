@@ -22,17 +22,35 @@ package enum SSHTCPTransportOwnershipModel: Equatable, Sendable {
     case escapedConnectionHandle
 }
 
+package enum SSHTCPTransportTerminalCloseEvidence: Equatable, Sendable {
+    case explicitCancellation
+    case structuredScopeExit
+    case referenceReleaseOnly
+}
+
 package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
     package let role: SSHTCPTransportFlowRole
     package let preference: SSHTCPTransportBackendPreference
     package let selectedBackend: SSHTCPTransportBackendSelection
     package let ownershipModel: SSHTCPTransportOwnershipModel
+    package let terminalCloseEvidence: SSHTCPTransportTerminalCloseEvidence
     package let requiresDeterministicAbort: Bool
     package let supportsDeterministicAbort: Bool
     package let isSelectedBackendAvailable: Bool
 
     package var needsStructuredRouteOwnerForDeterministicAbort: Bool {
         self.requiresDeterministicAbort && !self.supportsDeterministicAbort
+    }
+
+    package static func resolveCurrentPlatform(
+        role: SSHTCPTransportFlowRole,
+        preference: SSHTCPTransportBackendPreference
+    ) -> Self {
+        Self.resolve(
+            role: role,
+            preference: preference,
+            modernAvailable: Self.isModernNetworkConnectionAvailable
+        )
     }
 
     package static func resolve(
@@ -49,9 +67,12 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             role: role,
             selectedBackend: selectedBackend
         )
+        let terminalCloseEvidence = self.terminalCloseEvidence(
+            ownershipModel: ownershipModel
+        )
         let requiresDeterministicAbort = self.requiresDeterministicAbort(role: role)
         let supportsDeterministicAbort = self.supportsDeterministicAbort(
-            ownershipModel: ownershipModel
+            terminalCloseEvidence: terminalCloseEvidence
         )
 
         return Self(
@@ -59,10 +80,19 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             preference: preference,
             selectedBackend: selectedBackend,
             ownershipModel: ownershipModel,
+            terminalCloseEvidence: terminalCloseEvidence,
             requiresDeterministicAbort: requiresDeterministicAbort,
             supportsDeterministicAbort: supportsDeterministicAbort,
             isSelectedBackendAvailable: selectedBackend == .legacyNWConnection || modernAvailable
         )
+    }
+
+    private static var isModernNetworkConnectionAvailable: Bool {
+        if #available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *) {
+            return true
+        }
+
+        return false
     }
 
     private static func selectedBackend(
@@ -102,6 +132,19 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         }
     }
 
+    private static func terminalCloseEvidence(
+        ownershipModel: SSHTCPTransportOwnershipModel
+    ) -> SSHTCPTransportTerminalCloseEvidence {
+        switch ownershipModel {
+        case .explicitCancellationHandle:
+            .explicitCancellation
+        case .structuredScope:
+            .structuredScopeExit
+        case .escapedConnectionHandle:
+            .referenceReleaseOnly
+        }
+    }
+
     private static func requiresDeterministicAbort(
         role: SSHTCPTransportFlowRole
     ) -> Bool {
@@ -114,12 +157,12 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
     }
 
     private static func supportsDeterministicAbort(
-        ownershipModel: SSHTCPTransportOwnershipModel
+        terminalCloseEvidence: SSHTCPTransportTerminalCloseEvidence
     ) -> Bool {
-        switch ownershipModel {
-        case .explicitCancellationHandle, .structuredScope:
+        switch terminalCloseEvidence {
+        case .explicitCancellation, .structuredScopeExit:
             true
-        case .escapedConnectionHandle:
+        case .referenceReleaseOnly:
             false
         }
     }

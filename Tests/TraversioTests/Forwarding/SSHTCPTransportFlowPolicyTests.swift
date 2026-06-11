@@ -18,6 +18,7 @@ struct SSHTCPTransportFlowPolicyTests {
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
         #expect(policy.ownershipModel == .escapedConnectionHandle)
+        #expect(policy.terminalCloseEvidence == .referenceReleaseOnly)
         #expect(!policy.requiresDeterministicAbort)
         #expect(!policy.supportsDeterministicAbort)
         #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
@@ -33,6 +34,7 @@ struct SSHTCPTransportFlowPolicyTests {
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
         #expect(policy.ownershipModel == .structuredScope)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
         #expect(!policy.requiresDeterministicAbort)
         #expect(policy.supportsDeterministicAbort)
         #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
@@ -48,6 +50,7 @@ struct SSHTCPTransportFlowPolicyTests {
 
         #expect(policy.selectedBackend == .legacyNWConnection)
         #expect(policy.ownershipModel == .explicitCancellationHandle)
+        #expect(policy.terminalCloseEvidence == .explicitCancellation)
         #expect(policy.requiresDeterministicAbort)
         #expect(policy.supportsDeterministicAbort)
         #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
@@ -63,6 +66,7 @@ struct SSHTCPTransportFlowPolicyTests {
 
         #expect(policy.selectedBackend == .modernNetworkConnection)
         #expect(policy.ownershipModel == .escapedConnectionHandle)
+        #expect(policy.terminalCloseEvidence == .referenceReleaseOnly)
         #expect(policy.requiresDeterministicAbort)
         #expect(!policy.supportsDeterministicAbort)
         #expect(policy.needsStructuredRouteOwnerForDeterministicAbort)
