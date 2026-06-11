@@ -38,8 +38,8 @@ struct SSHRemotePortForwardService: Sendable {
     private let listenerService: SSHRemotePortForwardListenerService
     private let connectionMonitor: SSHForwardingConnectionMonitor
     private let requestedForward: SSHRemotePortForward
-    private let transportBackendPreference: SSHTCPTransportBackendPreference
     private let bridgeHandler: SSHRemotePortForwardBridgeHandler
+    let flowGraph: SSHForwardingFlowGraph
 
     init(
         client: SSHTransportProtocolClient,
@@ -66,7 +66,10 @@ struct SSHRemotePortForwardService: Sendable {
             lifetime: lifetime
         )
         self.requestedForward = requestedForward
-        self.transportBackendPreference = transportBackendPreference
+        self.flowGraph = SSHForwardingFlowGraph(
+            kind: .remoteTCPBridge,
+            transportBackendPreference: transportBackendPreference
+        )
         self.bridgeHandler = bridgeHandler ?? { localTransport, remoteChannel in
             try await bridge.bridge(
                 localTransport: localTransport,
@@ -191,12 +194,16 @@ struct SSHRemotePortForwardService: Sendable {
     private func handleAcceptedChannel(
         _ acceptedChannel: SSHForwardedTCPIPChannel
     ) async throws {
+        guard let bridgeLocalTransportPolicy = self.flowGraph.bridgeLocalTransportPolicy else {
+            preconditionFailure("Remote port forwarding flow graph is missing a bridge-local transport policy")
+        }
+
         try await SSHTCPByteStreamTransportFactory.withConnected(
             to: SSHSocketEndpoint(
                 host: self.requestedForward.localHost,
                 port: self.requestedForward.localPort
             ),
-            preference: self.transportBackendPreference
+            policy: bridgeLocalTransportPolicy
         ) { localTransport in
             try await self.bridgeHandler(localTransport, acceptedChannel.handle)
         }

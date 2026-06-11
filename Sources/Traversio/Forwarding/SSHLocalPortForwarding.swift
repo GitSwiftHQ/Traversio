@@ -36,8 +36,8 @@ struct SSHLocalPortForwardService: Sendable {
     private let client: SSHTransportProtocolClient
     private let lifetime: SSHConnectionLifetime
     private let requestedForward: SSHLocalPortForward
-    private let transportBackendPreference: SSHTCPTransportBackendPreference
     private let bridge: SSHPortForwardingBridge
+    let flowGraph: SSHForwardingFlowGraph
 
     init(
         client: SSHTransportProtocolClient,
@@ -49,17 +49,24 @@ struct SSHLocalPortForwardService: Sendable {
         self.client = client
         self.lifetime = lifetime
         self.requestedForward = requestedForward
-        self.transportBackendPreference = transportBackendPreference
         self.bridge = bridge
+        self.flowGraph = SSHForwardingFlowGraph(
+            kind: .localTCP,
+            transportBackendPreference: transportBackendPreference
+        )
     }
 
     func withListener<Result>(
         _ body: (SSHLocalPortForward) async throws -> Result
     ) async throws -> Result {
-        let listener = try SSHTCPListenerFactory.makeLifecycleControlledListener(
+        guard let listenerPolicy = self.flowGraph.localListenerTransportPolicy else {
+            preconditionFailure("Local port forwarding flow graph is missing a listener policy")
+        }
+
+        let listener = try SSHTCPListenerFactory.makeListener(
             localHost: self.requestedForward.localHost,
             localPort: self.requestedForward.localPort,
-            preference: self.transportBackendPreference
+            policy: listenerPolicy
         )
         let connectionTasks = SSHLocalPortForwardConnectionTasks()
         let connectionMonitor = SSHForwardingConnectionMonitor(

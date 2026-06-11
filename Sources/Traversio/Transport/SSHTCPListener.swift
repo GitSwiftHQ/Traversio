@@ -80,7 +80,7 @@ package enum SSHTCPListenerFactory {
         )
     }
 
-    private static func makeListener(
+    package static func makeListener(
         localHost: String,
         localPort: UInt16,
         policy: SSHTCPTransportFlowPolicy

@@ -25,8 +25,8 @@ struct SSHDynamicPortForwardService: Sendable {
     private let lifetime: SSHConnectionLifetime
     private let requestedForward: SSHDynamicPortForward
     private let socks5Authentication: SSHDynamicSOCKS5Authentication
-    private let transportBackendPreference: SSHTCPTransportBackendPreference
     private let bridge: SSHPortForwardingBridge
+    let flowGraph: SSHForwardingFlowGraph
 
     init(
         client: SSHTransportProtocolClient,
@@ -42,17 +42,24 @@ struct SSHDynamicPortForwardService: Sendable {
         self.socks5Authentication = try SSHDynamicSOCKS5Authentication(
             validating: socks5Authentication
         )
-        self.transportBackendPreference = transportBackendPreference
         self.bridge = bridge
+        self.flowGraph = SSHForwardingFlowGraph(
+            kind: .dynamicSOCKS5,
+            transportBackendPreference: transportBackendPreference
+        )
     }
 
     func withListener<Result>(
         _ body: (SSHDynamicPortForward) async throws -> Result
     ) async throws -> Result {
-        let listener = try SSHTCPListenerFactory.makeLifecycleControlledListener(
+        guard let listenerPolicy = self.flowGraph.localListenerTransportPolicy else {
+            preconditionFailure("Dynamic port forwarding flow graph is missing a listener policy")
+        }
+
+        let listener = try SSHTCPListenerFactory.makeListener(
             localHost: self.requestedForward.localHost,
             localPort: self.requestedForward.localPort,
-            preference: self.transportBackendPreference
+            policy: listenerPolicy
         )
         let connectionTasks = SSHDynamicPortForwardConnectionTasks()
         let connectionMonitor = SSHForwardingConnectionMonitor(
