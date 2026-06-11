@@ -347,10 +347,12 @@ public struct SSHAutomaticRekeyPolicy: Equatable, Sendable {
         inboundPacketThreshold: UInt64?,
         idleTimeInterval: TimeInterval? = nil
     ) {
-        precondition(
-            idleTimeInterval == nil || (idleTimeInterval!.isFinite && idleTimeInterval! > 0),
-            "idleTimeInterval must be a finite value greater than zero"
-        )
+        if let idleTimeInterval {
+            precondition(
+                idleTimeInterval.isFinite && idleTimeInterval > 0,
+                "idleTimeInterval must be a finite value greater than zero"
+            )
+        }
         self.outboundPacketThreshold = outboundPacketThreshold
         self.inboundPacketThreshold = inboundPacketThreshold
         self.idleTimeInterval = idleTimeInterval

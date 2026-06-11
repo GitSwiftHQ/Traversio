@@ -198,11 +198,13 @@ public struct SSHConnectionStateEventSequence: AsyncSequence, Sendable {
 }
 
 package extension SSHConnectionStateEventSequence {
-    static let finished = Self(
-        stream: AsyncStream { continuation in
-            continuation.finish()
-        }
-    )
+    static let finished: Self = {
+        let (stream, continuation) = AsyncStream.makeStream(
+            of: SSHConnectionStateEvent.self
+        )
+        continuation.finish()
+        return Self(stream: stream)
+    }()
 }
 
 package actor SSHConnectionStateCoordinator {
@@ -215,12 +217,11 @@ package actor SSHConnectionStateCoordinator {
         let continuation: AsyncStream<SSHConnectionStateEvent>.Continuation
 
         init() {
-            var capturedContinuation: AsyncStream<SSHConnectionStateEvent>.Continuation?
-            let stream = AsyncStream<SSHConnectionStateEvent> { continuation in
-                capturedContinuation = continuation
-            }
+            let (stream, continuation) = AsyncStream.makeStream(
+                of: SSHConnectionStateEvent.self
+            )
             self.sequence = SSHConnectionStateEventSequence(stream: stream)
-            self.continuation = capturedContinuation!
+            self.continuation = continuation
         }
     }
 

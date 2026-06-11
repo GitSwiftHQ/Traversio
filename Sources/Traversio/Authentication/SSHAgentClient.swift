@@ -191,6 +191,7 @@ public actor SSHAgentClient {
 
         let socketPath = self.socketPath
         let frame = frameWriter.bytes
+        // SSH agent sockets use blocking POSIX I/O; keep it off the cooperative executor.
         return try await Task.detached {
             try Self.performAgentTransaction(
                 socketPath: socketPath,
