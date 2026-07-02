@@ -35,10 +35,18 @@ public struct SSHRemotePortForward: Equatable, Sendable {
     }
 }
 struct SSHRemotePortForwardService: Sendable {
+    /// Default bound on how long a graceful shutdown waits for still-active
+    /// bridged connections to finish on their own before their tasks are
+    /// cancelled. Chosen so a well-behaved in-flight bridge can drain quickly,
+    /// while a live-but-idle bridge (e.g. an idle long-poll) can never make the
+    /// enclosing `withRemotePortForwarding` call hang indefinitely.
+    static let defaultGracefulDrainTimeoutNanoseconds: UInt64 = 5_000_000_000
+
     private let listenerService: SSHRemotePortForwardListenerService
     private let connectionMonitor: SSHForwardingConnectionMonitor
     private let requestedForward: SSHRemotePortForward
     private let bridgeHandler: SSHRemotePortForwardBridgeHandler
+    private let gracefulDrainTimeoutNanoseconds: UInt64
     let flowGraph: SSHForwardingFlowGraph
 
     init(
@@ -48,9 +56,12 @@ struct SSHRemotePortForwardService: Sendable {
         metadata: SSHConnectionMetadata,
         logHandler: SSHClientLogHandler,
         transportBackendPreference: SSHTCPTransportBackendPreference = .automatic,
+        gracefulDrainTimeoutNanoseconds: UInt64 =
+            SSHRemotePortForwardService.defaultGracefulDrainTimeoutNanoseconds,
         bridge: SSHPortForwardingBridge = SSHPortForwardingBridge(),
         bridgeHandler: SSHRemotePortForwardBridgeHandler? = nil
     ) {
+        self.gracefulDrainTimeoutNanoseconds = gracefulDrainTimeoutNanoseconds
         self.listenerService = SSHRemotePortForwardListenerService(
             client: client,
             requestedForward: SSHTCPIPForwardingRequest(
@@ -238,7 +249,31 @@ struct SSHRemotePortForwardService: Sendable {
         acceptTask.cancel()
         _ = try? await acceptTask.value
 
+        await self.drainActiveConnections(connectionTasks)
+    }
+
+    /// Waits for still-active bridged connections to finish, but only up to
+    /// `gracefulDrainTimeoutNanoseconds`. Once the bound elapses, any lingering
+    /// bridges are cancelled so a live-but-idle bridged connection can never make
+    /// graceful shutdown block indefinitely. Matches the always-cancel teardown
+    /// used by the error path and by local/dynamic forwarding.
+    private func drainActiveConnections(
+        _ connectionTasks: SSHRemotePortForwardConnectionTasks
+    ) async {
+        let drainTimeout = self.gracefulDrainTimeoutNanoseconds
+        let deadlineTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: drainTimeout)
+            } catch {
+                return
+            }
+            await connectionTasks.beginShutdown(cancelActiveTasks: true)
+        }
+
         await connectionTasks.waitForAll()
+
+        deadlineTask.cancel()
+        _ = await deadlineTask.value
     }
 }
 

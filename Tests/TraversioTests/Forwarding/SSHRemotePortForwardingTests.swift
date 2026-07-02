@@ -1211,9 +1211,123 @@ func sshRemotePortForwardingServiceDeliversAcceptedChannelDataBeforeRemoteEOF() 
     }
 }
 
+@Test
+func sshRemotePortForwardingServiceBoundedDrainCancelsLingeringBridgeWhenBodyReturns() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let requestSuccessPayload = try remoteForwardRequestSuccessPayload(
+        allocatedPort: 47_000
+    )
+    let cancelSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+    )
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: [
+            serviceAcceptPayload,
+            authSuccessPayload,
+            requestSuccessPayload,
+            try forwardedTCPIPOpenPayload(
+                senderChannel: 55,
+                listeningPort: 47_000,
+                originatorPort: 62_201
+            ),
+            cancelSuccessPayload,
+        ],
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    try await withLoopbackTCPServer { localPort in
+        let bridgeProbe = LingeringBridgeProbe()
+        let drainTimeoutNanoseconds: UInt64 = 200_000_000
+        let service = SSHRemotePortForwardService(
+            client: fixture.client,
+            requestedForward: SSHRemotePortForward(
+                localHost: "127.0.0.1",
+                localPort: localPort,
+                remoteHost: "127.0.0.1",
+                remotePort: 0
+            ),
+            lifetime: SSHConnectionLifetime(),
+            metadata: testConnectionMetadata(),
+            logHandler: .disabled,
+            gracefulDrainTimeoutNanoseconds: drainTimeoutNanoseconds,
+            bridgeHandler: { _, remoteChannel in
+                try await bridgeProbe.handle(remoteChannel)
+            }
+        )
+
+        let startNanoseconds = DispatchTime.now().uptimeNanoseconds
+        _ = try await withRemotePortForwardThrowingTestTimeout(nanoseconds: 5_000_000_000) {
+            try await service.withForward { forward in
+                #expect(forward.remotePort == 47_000)
+
+                // Do not return from the body until an accepted connection is
+                // actively bridged, so the graceful shutdown has to drain a
+                // live-but-idle bridge.
+                try await withRemotePortForwardTestTimeout {
+                    await bridgeProbe.waitUntilActive()
+                }
+
+                return forward
+            }
+        }
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startNanoseconds
+
+        // The lingering bridge must be cancelled once the bounded drain elapses,
+        // and the whole scope must complete well within a fraction of the
+        // bridge's own (effectively unbounded) sleep.
+        #expect(await bridgeProbe.wasCancelled())
+        #expect(elapsedNanoseconds < 3_000_000_000)
+    }
+}
+
 private enum RemotePortForwardTestError: Error {
     case syntheticBridgeFailure
     case timedOut
+}
+
+private actor LingeringBridgeProbe {
+    private var isActive = false
+    private var wasCancelledDuringDrain = false
+    private var activeContinuation: CheckedContinuation<Void, Never>?
+
+    func handle(_ remoteChannel: SSHTCPIPChannelHandle) async throws {
+        self.isActive = true
+        self.activeContinuation?.resume()
+        self.activeContinuation = nil
+
+        do {
+            // Model a live-but-idle bridged connection (e.g. an idle long-poll)
+            // that never completes on its own within the graceful drain window.
+            try await Task.sleep(nanoseconds: 60_000_000_000)
+        } catch {
+            self.wasCancelledDuringDrain = true
+            throw error
+        }
+    }
+
+    func waitUntilActive() async {
+        guard !self.isActive else {
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            self.activeContinuation = continuation
+        }
+    }
+
+    func wasCancelled() -> Bool {
+        self.wasCancelledDuringDrain
+    }
 }
 
 private actor RemoteForwardReadyProbe {

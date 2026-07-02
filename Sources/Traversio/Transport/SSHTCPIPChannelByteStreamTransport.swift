@@ -198,6 +198,21 @@ actor SSHBufferedByteStreamTransport: SSHCancellationControllingByteStreamTransp
         )
     }
 
+    func setObservationHandler(
+        _ handler: (@Sendable (SSHTransportObservationEvent) -> Void)?
+    ) async {
+        // Forward observation to the wrapped base so proxied roots report
+        // transport-observation events (and, in turn, drive proactive closes)
+        // exactly like a directly connected transport.
+        await self.base.setObservationHandler(handler)
+    }
+
+    func currentNetworkPath() async -> SSHTransportNetworkPath? {
+        // Forward to the wrapped base so `SSHConnection.networkPath` is populated
+        // for proxied roots instead of falling back to the no-op default.
+        await self.base.currentNetworkPath()
+    }
+
     func close() async {
         self.bufferedBytes.removeAll(keepingCapacity: false)
         self.bufferedEndOfStream = true
