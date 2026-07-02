@@ -139,9 +139,19 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             return .modernNetworkConnection
         case .automatic:
             switch role {
-            case .routeRootConnection, .lifecycleControlledListener:
+            case .routeRootConnection, .ordinaryConnection, .lifecycleControlledListener:
+                // A bare ordinary connection is produced by `connect(...)`, which
+                // returns `any SSHByteStreamTransport` rather than a structured
+                // handle/scope. The modern `NetworkConnection<TCP>` backend has no
+                // cancel/close API, so it can only be torn down deterministically
+                // through a library- or caller-owned structured scope; served bare
+                // it would leak the socket. Under `.automatic` an ordinary bare
+                // connection therefore resolves to the legacy backend, whose
+                // `NWConnection.cancel()` gives an explicit-cancellation close.
+                // (Route roots and lifecycle-controlled listeners likewise need a
+                // deterministic explicit-cancellation abort, so they stay legacy.)
                 return .legacyNWConnection
-            case .ordinaryConnection, .structuredRouteRootConnection, .scopedConnection, .listener:
+            case .structuredRouteRootConnection, .scopedConnection, .listener:
                 return modernAvailable ? .modernNetworkConnection : .legacyNWConnection
             }
         }
@@ -157,14 +167,17 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         case .modernNetworkConnection:
             switch role {
             case .routeRootConnection, .ordinaryConnection:
-                // An ordinary modern connection is served through the
-                // library-owned structured scope (the route-root owner), which
-                // tears the underlying `NetworkConnection<TCP>` down
-                // deterministically on close. A bare, escaped modern handle has
-                // no cancel/close API, so it could only ever be released by
-                // dropping its last reference — leaking the socket and stranding
-                // any blocked reader. That escaped model is intentionally never
-                // produced here.
+                // A modern ordinary connection is only ever reached under an
+                // EXPLICIT `.modern` preference (under `.automatic` an ordinary
+                // connection resolves to the legacy backend — see
+                // `selectedBackend`). When it is reached, it must be served
+                // through the library-owned structured scope (the route-root
+                // owner), which tears the underlying `NetworkConnection<TCP>`
+                // down deterministically on close; the bare `connect(...)` entry
+                // point correctly refuses it because a bare modern transport has
+                // no cancel/close API and could only be released by dropping its
+                // last reference — leaking the socket and stranding any blocked
+                // reader. That escaped model is intentionally never produced here.
                 return .libraryOwnedStructuredScope
             case .structuredRouteRootConnection, .scopedConnection, .listener, .lifecycleControlledListener:
                 return .callerOwnedStructuredScope

@@ -70,6 +70,66 @@ func factoryRefusesToVendBareModernTransportWithoutDeterministicClose() async th
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 @Test
+func automaticBareConnectYieldsUsableTransportWithDeterministicCloseOnModernPlatform() async throws {
+    // Regression: on a modern-capable platform the `.automatic` bare `connect`
+    // path (used e.g. by live probe client sockets) must NOT resolve to the
+    // modern backend that then hard-errors with `unsupportedTransportBackend`.
+    // It must resolve to the legacy backend and return a usable transport whose
+    // `close()` is a deterministic explicit-cancellation, not reference-release.
+
+    // The resolved policy for the bare-connect role is legacy with a
+    // deterministic (explicit-cancellation) close and no escaped/reference-only
+    // evidence.
+    #expect(SSHTCPTransportFlowPolicy.isModernNetworkConnectionAvailable)
+    let policy = SSHTCPTransportFlowPolicy.resolveCurrentPlatform(
+        role: .ordinaryConnection,
+        preference: .automatic
+    )
+    #expect(policy.selectedBackend == .legacyNWConnection)
+    #expect(policy.supportsDeterministicAbort)
+    #expect(policy.terminalCloseEvidence == .explicitCancellation)
+    #expect(policy.terminalCloseEvidence != .referenceReleaseOnly)
+    #expect(policy.ownershipModel != .escapedConnectionHandle)
+
+    let server = try await HangingPeerTCPServer.start()
+    defer {
+        server.stop()
+    }
+
+    // Does NOT throw `unsupportedTransportBackend`; returns a usable transport.
+    let transport = try await SSHTCPByteStreamTransportFactory.connect(
+        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port),
+        preference: .automatic
+    )
+    try await transport.send(Array("PING".utf8), endOfStream: false)
+    await server.waitForAcceptedConnection()
+
+    // Close is deterministic: it completes promptly even though the peer keeps
+    // its side open (legacy `NWConnection.cancel()`), rather than hanging on a
+    // reference-release-only teardown.
+    let closeTask = Task {
+        await transport.close()
+        return true
+    }
+    let didFinishClose = await withTaskGroup(of: Bool.self) { group in
+        group.addTask {
+            await closeTask.value
+        }
+        group.addTask {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            return false
+        }
+
+        let firstResult = await group.next() ?? false
+        group.cancelAll()
+        return firstResult
+    }
+
+    #expect(didFinishClose)
+}
+
+@available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+@Test
 func explicitModernRouteRootTransportHandleCloseReleasesStructuredScope() async throws {
     let server = try await HangingPeerTCPServer.start()
     defer {

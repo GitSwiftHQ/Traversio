@@ -9,20 +9,23 @@ import Testing
 @Suite("TCP transport flow policy")
 struct SSHTCPTransportFlowPolicyTests {
     @Test
-    func automaticOrdinaryConnectionUsesModernStructuredScopeWhenAvailable() {
+    func automaticOrdinaryConnectionUsesLegacyDeterministicCloseWhenModernAvailable() {
         let policy = SSHTCPTransportFlowPolicy.resolve(
             role: .ordinaryConnection,
             preference: .automatic,
             modernAvailable: true
         )
 
-        // An ordinary modern connection must never resolve to the escaped,
-        // reference-release-only handle; it is served through a library-owned
-        // structured scope that tears down deterministically.
-        #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .libraryOwnedStructuredScope)
+        // A bare ordinary connection (produced by `connect(...)`, not a handle)
+        // cannot use the modern structured scope, so under `.automatic` it must
+        // resolve to the legacy backend, whose `NWConnection.cancel()` provides a
+        // deterministic explicit-cancellation close. It must never resolve to a
+        // bare modern backend (which then hard-errors) or a reference-release-only
+        // escaped handle.
+        #expect(policy.selectedBackend == .legacyNWConnection)
+        #expect(policy.ownershipModel == .explicitCancellationHandle)
         #expect(policy.ownershipModel != .escapedConnectionHandle)
-        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(policy.terminalCloseEvidence == .explicitCancellation)
         #expect(policy.terminalCloseEvidence != .referenceReleaseOnly)
         #expect(policy.operationCancellationIsolation == .canIgnoreCallerCancellation)
         #expect(!policy.requiresDeterministicAbort)
@@ -31,6 +34,7 @@ struct SSHTCPTransportFlowPolicyTests {
         #expect(policy.supportsSharedProtocolReceiveCancellationIsolation)
         #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
         #expect(!policy.needsSharedProtocolReceiveCancellationIsolation)
+        #expect(policy.isSelectedBackendAvailable)
     }
 
     @Test
