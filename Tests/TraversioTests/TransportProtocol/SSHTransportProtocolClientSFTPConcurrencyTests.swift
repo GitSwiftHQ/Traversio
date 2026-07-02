@@ -356,6 +356,85 @@ func transportProtocolClientReadsWholeFileWithBoundedConcurrentSFTPRequests() as
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 @Test
+func transportProtocolClientCancelsOutstandingConcurrentSFTPReadsWhenOneReplyIsAnError() async throws {
+    let fileHandle = SSHSFTPHandle(bytes: [0xba, 0xdc, 0x0f, 0xfe])
+    let fixture = try await makeConcurrentSFTPFixture(
+        senderChannel: 109
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+    let sftpClient = try await fixture.client.openSFTPClient()
+
+    // Use the handle-based read so the concurrent-read state machine is exercised
+    // in isolation (no openFile/close traffic to answer).
+    let readTask = Task {
+        try await sftpClient.readFile(
+            handle: fileHandle,
+            startingAt: 0,
+            chunkSize: 4,
+            maxConcurrentReads: 3
+        )
+    }
+    defer { readTask.cancel() }
+
+    let sentMessages = try await waitForSentSFTPMessages(
+        minimumCount: 3,
+        from: fixture
+    )
+    let readRequests = sentMessages.compactMap { message -> SSHSFTPReadFileMessage? in
+        guard case let .readFile(readMessage) = message else {
+            return nil
+        }
+        return readMessage
+    }
+    #expect(readRequests.count == 3)
+    #expect(readRequests.map(\.offset) == [0, 4, 8])
+
+    let firstReadRequest = try #require(readRequests.first(where: { $0.offset == 0 }))
+    let secondReadRequest = try #require(readRequests.first(where: { $0.offset == 4 }))
+
+    // Answer the first read with a full chunk (which schedules a fourth read at
+    // offset 12) and fail the second read with a mid-file permission error. The
+    // reads at offsets 8 and 12 remain outstanding when the error propagates.
+    try await fixture.server.appendSFTPMessages(
+        [
+            .data(
+                SSHSFTPDataMessage(
+                    requestID: firstReadRequest.requestID,
+                    data: Array("abcd".utf8)
+                )
+            ),
+            .status(
+                SSHSFTPStatusMessage(
+                    requestID: secondReadRequest.requestID,
+                    statusCode: .permissionDenied,
+                    errorMessage: "denied",
+                    languageTag: ""
+                )
+            ),
+        ]
+    )
+
+    do {
+        _ = try await readTask.value
+        Issue.record("Expected concurrent read to throw on mid-file status error")
+    } catch let SSHSFTPError.status(statusMessage) {
+        #expect(statusMessage.statusCode == .permissionDenied)
+    } catch {
+        Issue.record("Expected SSHSFTPError.status, got \(String(reflecting: error))")
+    }
+
+    // The outstanding reads (offsets 8 and 12) must have been cancelled, leaving
+    // no live pending entries that would leak or pin the receive loop.
+    #expect(await sftpClient.leakedPendingResponseCountForTesting() == 0)
+    #expect(await sftpClient.receiveLoopNeedsMoreResponsesForTesting() == false)
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
 func transportProtocolClientClampsOversizedConcurrentSFTPReadRequestsToSafeDataLengths() async throws {
     let fileHandle = SSHSFTPHandle(bytes: [0xaa, 0xbb, 0xcc, 0xdd])
     let fixture = try await makeConcurrentSFTPFixture(

@@ -271,64 +271,7 @@ extension SSHSFTPClient {
         var bytesTransferred: UInt64 = 0
         var concurrentReadLimit = maxConcurrentReads
 
-        while pendingRequests.count < concurrentReadLimit {
-            let offset = nextOffsetToSchedule
-            nextOffsetToSchedule += UInt64(chunkSize)
-            pendingRequests[offset] = try await self.sendReadRequest(
-                handle: handle,
-                offset: offset,
-                length: readLength
-            )
-        }
-
-        while let requestID = pendingRequests.removeValue(forKey: nextOffsetToAppend) {
-            try self.checkCancellation()
-            let chunk = try await self.receiveReadResponse(
-                for: requestID,
-                length: readLength
-            )
-
-            switch chunk {
-            case let .some(bytes):
-                guard !bytes.isEmpty else {
-                    let laterRequestIDs = pendingRequests
-                        .filter { $0.key > nextOffsetToAppend }
-                        .map(\.value)
-                    for requestID in laterRequestIDs {
-                        self.cancelPendingResponse(for: requestID)
-                    }
-                    return data
-                }
-
-                data.append(contentsOf: bytes)
-                bytesTransferred += UInt64(bytes.count)
-                await self.reportTransferProgress(
-                    .init(
-                        operation: .read,
-                        bytesTransferred: bytesTransferred
-                    ),
-                    using: progress
-                )
-                nextOffsetToAppend += UInt64(bytes.count)
-
-                if bytes.count < chunkSize {
-                    for requestID in pendingRequests.values {
-                        self.cancelPendingResponse(for: requestID)
-                    }
-                    pendingRequests.removeAll()
-                    nextOffsetToSchedule = nextOffsetToAppend
-                    concurrentReadLimit = 1
-                }
-            case .none:
-                let laterRequestIDs = pendingRequests
-                    .filter { $0.key > nextOffsetToAppend }
-                    .map(\.value)
-                for requestID in laterRequestIDs {
-                    self.cancelPendingResponse(for: requestID)
-                }
-                return data
-            }
-
+        do {
             while pendingRequests.count < concurrentReadLimit {
                 let offset = nextOffsetToSchedule
                 nextOffsetToSchedule += UInt64(chunkSize)
@@ -338,9 +281,79 @@ extension SSHSFTPClient {
                     length: readLength
                 )
             }
-        }
 
-        return data
+            while let requestID = pendingRequests.removeValue(forKey: nextOffsetToAppend) {
+                try self.checkCancellation()
+                let chunk = try await self.receiveReadResponse(
+                    for: requestID,
+                    length: readLength
+                )
+
+                switch chunk {
+                case let .some(bytes):
+                    guard !bytes.isEmpty else {
+                        let laterRequestIDs = pendingRequests
+                            .filter { $0.key > nextOffsetToAppend }
+                            .map(\.value)
+                        for requestID in laterRequestIDs {
+                            self.cancelPendingResponse(for: requestID)
+                        }
+                        return data
+                    }
+
+                    data.append(contentsOf: bytes)
+                    bytesTransferred += UInt64(bytes.count)
+                    await self.reportTransferProgress(
+                        .init(
+                            operation: .read,
+                            bytesTransferred: bytesTransferred
+                        ),
+                        using: progress
+                    )
+                    nextOffsetToAppend += UInt64(bytes.count)
+
+                    if bytes.count < chunkSize {
+                        for requestID in pendingRequests.values {
+                            self.cancelPendingResponse(for: requestID)
+                        }
+                        pendingRequests.removeAll()
+                        nextOffsetToSchedule = nextOffsetToAppend
+                        concurrentReadLimit = 1
+                    }
+                case .none:
+                    let laterRequestIDs = pendingRequests
+                        .filter { $0.key > nextOffsetToAppend }
+                        .map(\.value)
+                    for requestID in laterRequestIDs {
+                        self.cancelPendingResponse(for: requestID)
+                    }
+                    return data
+                }
+
+                while pendingRequests.count < concurrentReadLimit {
+                    let offset = nextOffsetToSchedule
+                    nextOffsetToSchedule += UInt64(chunkSize)
+                    pendingRequests[offset] = try await self.sendReadRequest(
+                        handle: handle,
+                        offset: offset,
+                        length: readLength
+                    )
+                }
+            }
+
+            return data
+        } catch {
+            // Mirror the write path: an error mid-stream (e.g. a permission or
+            // status failure, a cancelled read, or a send failure) must cancel
+            // every still-outstanding request so no pending entry is leaked in
+            // the response router. The request currently being awaited has
+            // already been removed from `pendingRequests`; the remainder are
+            // exactly the requests that were sent but not yet consumed.
+            for requestID in pendingRequests.values {
+                self.cancelPendingResponse(for: requestID)
+            }
+            throw error
+        }
     }
 
     private func writeFileWithConcurrentRequests(

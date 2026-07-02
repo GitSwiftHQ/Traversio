@@ -357,8 +357,18 @@ package actor SSHSFTPClient {
     }
 
     func allocateRequestID() -> UInt32 {
-        let requestID = self.nextRequestID
-        self.nextRequestID &+= 1
+        // Request IDs wrap (`&+`). On a long-lived channel the counter can wrap
+        // past 2^32 and land on an ID that is still registered as pending. Skip
+        // any such collisions so a legitimately in-flight request ID is never
+        // reused and `preparePendingResponse` can never trap on it. No other
+        // allocation can interleave before the caller registers this ID, so the
+        // returned ID is guaranteed still free when it is prepared.
+        let router = self.responseRouter()
+        var requestID = self.nextRequestID
+        while router.pendingResponses[requestID] != nil {
+            requestID &+= 1
+        }
+        self.nextRequestID = requestID &+ 1
         return requestID
     }
 
@@ -515,9 +525,16 @@ package actor SSHSFTPClient {
     private func receiveLoopNeedsMoreResponses(using router: ResponseRouter) -> Bool {
         for pendingResponse in router.pendingResponses.values {
             switch pendingResponse {
-            case .awaitingWaiter, .waiting, .ignoringResponse:
+            case .awaitingWaiter, .waiting:
                 return true
-            case .buffered:
+            case .buffered, .ignoringResponse:
+                // A `.buffered` result already has its bytes in hand, and an
+                // `.ignoringResponse` entry belongs to a cancelled/abandoned
+                // request whose reply we will simply discard. Neither has a live
+                // waiter, so they must not keep the receive loop (and its strong
+                // reference to this actor) alive. If such a reply ever arrives it
+                // is drained when the loop next runs for a real request; on
+                // channel close `failPendingResponses` clears the entry.
                 continue
             }
         }
@@ -690,6 +707,35 @@ package actor SSHSFTPClient {
     func checkCancellation() throws {
         try Task.checkCancellation()
     }
+
+    #if DEBUG
+    /// Number of pending response entries that still hold live state
+    /// (`awaitingWaiter`/`waiting`/`buffered`) and would leak if a request were
+    /// abandoned without cleanup. `.ignoringResponse` entries are excluded
+    /// because they no longer keep the receive loop alive. Test-only.
+    func leakedPendingResponseCountForTesting() -> Int {
+        guard let router = self.storedResponseRouter else {
+            return 0
+        }
+        return router.pendingResponses.values.reduce(into: 0) { count, pending in
+            switch pending {
+            case .awaitingWaiter, .waiting, .buffered:
+                count += 1
+            case .ignoringResponse:
+                break
+            }
+        }
+    }
+
+    /// Whether the receive loop currently has work that keeps it (and its strong
+    /// reference to this actor) alive. Test-only.
+    func receiveLoopNeedsMoreResponsesForTesting() -> Bool {
+        guard let router = self.storedResponseRouter else {
+            return false
+        }
+        return self.receiveLoopNeedsMoreResponses(using: router)
+    }
+    #endif
 }
 
 extension SSHTransportProtocolClient {
