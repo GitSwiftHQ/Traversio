@@ -75,20 +75,50 @@ struct SSHActorWaiterQueue {
 struct SSHSessionReceiveWindowState: Sendable {
     let initialWindowSize: UInt32
     private(set) var remainingWindowSize: UInt32
+    // Bytes the application has consumed but not yet handed back to the peer as window.
+    // Batched so we emit one WINDOW_ADJUST per threshold rather than one per read.
     private var pendingWindowAdjustment: UInt32 = 0
     private let replenishThreshold: UInt32
+    // Upper bound on bytes that may sit received-but-unconsumed for this channel. Because
+    // the window is only replenished as the application drains buffered bytes (see
+    // `replenishForConsumedBytes`), the unread buffer can never grow past one initial
+    // window: once a stalled consumer lets the window reach zero the peer must stop
+    // sending. Tying the cap to the initial window keeps that natural bound explicit and
+    // turns a non-reading consumer into real backpressure instead of unbounded memory.
+    let bufferHighWaterMark: UInt32
 
     init(initialWindowSize: UInt32, replenishThreshold: UInt32) {
         self.initialWindowSize = initialWindowSize
         self.remainingWindowSize = initialWindowSize
         self.replenishThreshold = max(1, replenishThreshold)
+        self.bufferHighWaterMark = initialWindowSize
     }
 
-    mutating func consume(
+    // Bytes received from the peer that the application has not yet consumed. Derived from
+    // the window bookkeeping so it can never disagree with the credit we have advertised:
+    // `initialWindowSize - remainingWindowSize` is what we have granted-but-not-refilled,
+    // and of that `pendingWindowAdjustment` has already been consumed. Saturating so an
+    // explicit `adjustReceiveWindow()` over-grant (which can push the window above the
+    // initial size) cannot underflow.
+    var bufferedByteCount: UInt32 {
+        let grantedButNotRefilled = self.initialWindowSize >= self.remainingWindowSize
+            ? self.initialWindowSize - self.remainingWindowSize
+            : 0
+        return grantedButNotRefilled >= self.pendingWindowAdjustment
+            ? grantedButNotRefilled - self.pendingWindowAdjustment
+            : 0
+    }
+
+    // Called when channel data (or extended data) is received. Decrements the advertised
+    // receive window and leaves the bytes buffered WITHOUT replenishing: the peer's window
+    // is refilled only once the application actually consumes buffered bytes. This is what
+    // makes a slow/non-reading consumer exert backpressure (its window drains to zero and
+    // the peer stops sending) instead of triggering unbounded buffering.
+    mutating func recordReceivedBytes(
         byteCount: Int,
         localChannelID: UInt32,
         remoteChannelID: UInt32
-    ) throws -> SSHChannelWindowAdjustMessage? {
+    ) throws {
         let receivedByteCount = UInt32(byteCount)
         guard receivedByteCount <= self.remainingWindowSize else {
             throw SSHConnectionError.channelReceiveWindowExceeded(
@@ -99,16 +129,53 @@ struct SSHSessionReceiveWindowState: Sendable {
         }
 
         self.remainingWindowSize -= receivedByteCount
-        self.pendingWindowAdjustment += receivedByteCount
+    }
 
-        guard self.pendingWindowAdjustment >= self.replenishThreshold ||
-                self.remainingWindowSize == 0 else {
+    // Called when the application consumes buffered bytes (a chunk/event/transcript drain,
+    // SFTP read, or forwarding-bridge read) or when the active buffering mode discards
+    // received bytes that no reader will drain. Replenishes the peer's window by the
+    // consumed amount, batched at `replenishThreshold`. While the unread buffer is at or
+    // above the high-water mark the grant is withheld so the peer's window drains to zero
+    // and it stops sending; no buffered data is ever dropped.
+    mutating func replenishForConsumedBytes(
+        byteCount: Int,
+        localChannelID: UInt32,
+        remoteChannelID: UInt32
+    ) throws -> SSHChannelWindowAdjustMessage? {
+        guard byteCount > 0 else {
+            return nil
+        }
+
+        let (accumulated, pendingOverflow) = self.pendingWindowAdjustment.addingReportingOverflow(
+            UInt32(byteCount)
+        )
+        guard !pendingOverflow else {
+            throw SSHConnectionError.channelReceiveWindowOverflow(
+                channelID: localChannelID,
+                current: self.pendingWindowAdjustment,
+                adjustment: UInt32(byteCount)
+            )
+        }
+        self.pendingWindowAdjustment = accumulated
+
+        guard self.bufferedByteCount < self.bufferHighWaterMark,
+              self.pendingWindowAdjustment >= self.replenishThreshold else {
             return nil
         }
 
         let bytesToAdd = self.pendingWindowAdjustment
         self.pendingWindowAdjustment = 0
-        self.remainingWindowSize += bytesToAdd
+        let (updatedWindowSize, overflow) = self.remainingWindowSize.addingReportingOverflow(
+            bytesToAdd
+        )
+        guard !overflow else {
+            throw SSHConnectionError.channelReceiveWindowOverflow(
+                channelID: localChannelID,
+                current: self.remainingWindowSize,
+                adjustment: bytesToAdd
+            )
+        }
+        self.remainingWindowSize = updatedWindowSize
         return SSHChannelWindowAdjustMessage(
             recipientChannel: remoteChannelID,
             bytesToAdd: bytesToAdd
@@ -206,15 +273,21 @@ struct SSHSessionOutputState: Sendable {
     var didSendClose = false
     var observationGeneration: UInt64 = 0
 
+    // Returns the number of received-but-buffered data bytes that this mode transition
+    // discards and that no reader will ever drain (only standard-error bytes buffered
+    // while `.undecided`, which `.standardOutputChunks` throws away). The caller must
+    // replenish the receive window for those bytes so a discarded stream cannot silently
+    // pin the peer's window at zero. All other cleared buffers hold duplicate copies of
+    // bytes still retained elsewhere, so they release no window.
     mutating func activateBufferingMode(
         _ requestedMode: SSHSessionOutputBufferingMode,
         channelID: UInt32
-    ) throws {
+    ) throws -> UInt32 {
         guard requestedMode != .undecided else {
-            return
+            return 0
         }
         if self.bufferingMode == requestedMode {
-            return
+            return 0
         }
         guard self.bufferingMode == .undecided else {
             throw SSHConnectionError.incompatibleSessionOutputConsumer(
@@ -227,18 +300,22 @@ struct SSHSessionOutputState: Sendable {
         self.bufferingMode = requestedMode
         switch requestedMode {
         case .undecided:
-            return
+            return 0
         case .transcript:
             self.unreadStandardOutput.removeAll(keepingCapacity: false)
             self.pendingEvents.removeAll(keepingCapacity: false)
+            return 0
         case .standardOutputChunks:
+            let discardedStandardErrorByteCount = UInt32(self.standardError.count)
             self.standardOutput.removeAll(keepingCapacity: false)
             self.standardError.removeAll(keepingCapacity: false)
             self.pendingEvents.removeAll(keepingCapacity: false)
+            return discardedStandardErrorByteCount
         case .events:
             self.standardOutput.removeAll(keepingCapacity: false)
             self.unreadStandardOutput.removeAll(keepingCapacity: false)
             self.standardError.removeAll(keepingCapacity: false)
+            return 0
         }
     }
 

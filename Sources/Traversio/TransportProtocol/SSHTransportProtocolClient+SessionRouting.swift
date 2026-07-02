@@ -416,15 +416,18 @@ extension SSHTransportProtocolClient {
                     received: data.recipientChannel
                 )
             }
-            let windowAdjust = try sessionState.receiveWindowState.consume(
+            // Decrement the receive window and buffer the bytes, but do NOT replenish here:
+            // the peer's window is refilled only when the application drains this channel's
+            // buffer (see readChannelStandardOutputChunk / readSessionEvent / transcript
+            // collection). Replenishing at routing time would defeat per-channel backpressure
+            // because the demultiplexer pumps every channel from whichever read currently
+            // holds the receive turn.
+            try sessionState.receiveWindowState.recordReceivedBytes(
                 byteCount: data.data.count,
                 localChannelID: channel.localChannelID,
                 remoteChannelID: channel.remoteChannelID
             )
             sessionState.outputState.appendStandardOutput(data.data)
-            if let windowAdjust {
-                return .sendWindowAdjust(windowAdjust)
-            }
             return .none
         case let .channelExtendedData(data):
             guard data.recipientChannel == channel.localChannelID else {
@@ -433,15 +436,29 @@ extension SSHTransportProtocolClient {
                     received: data.recipientChannel
                 )
             }
-            let windowAdjust = try sessionState.receiveWindowState.consume(
+            try sessionState.receiveWindowState.recordReceivedBytes(
                 byteCount: data.data.count,
                 localChannelID: channel.localChannelID,
                 remoteChannelID: channel.remoteChannelID
             )
-            if data.dataTypeCode == SSHChannelExtendedDataMessage.standardErrorDataTypeCode {
+            let isStandardError =
+                data.dataTypeCode == SSHChannelExtendedDataMessage.standardErrorDataTypeCode
+            if isStandardError {
                 sessionState.outputState.appendStandardError(data.data)
             }
-            if let windowAdjust {
+            // Extended data that no active reader will drain — non-stderr extended data, or
+            // stderr while the consumer only reads stdout chunks — is effectively consumed
+            // on arrival. Replenish its window immediately so a discarded stream cannot pin
+            // the peer's window at zero. Bytes retained for a reader are replenished when
+            // that reader drains them.
+            let bytesRetainedForReader = isStandardError
+                && sessionState.outputState.bufferingMode != .standardOutputChunks
+            if !bytesRetainedForReader,
+               let windowAdjust = try sessionState.receiveWindowState.replenishForConsumedBytes(
+                   byteCount: data.data.count,
+                   localChannelID: channel.localChannelID,
+                   remoteChannelID: channel.remoteChannelID
+               ) {
                 return .sendWindowAdjust(windowAdjust)
             }
             return .none

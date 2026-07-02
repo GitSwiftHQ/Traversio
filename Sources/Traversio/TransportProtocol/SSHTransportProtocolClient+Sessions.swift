@@ -1014,7 +1014,7 @@ extension SSHTransportProtocolClient {
         while true {
             try self.checkCancellation()
             var sessionState = try self.requireManagedSessionState(forLocalChannelID: localChannelID)
-            try sessionState.outputState.activateBufferingMode(
+            _ = try sessionState.outputState.activateBufferingMode(
                 .transcript,
                 channelID: localChannelID
             )
@@ -1032,6 +1032,18 @@ extension SSHTransportProtocolClient {
                 )
                 self.removeManagedSessionState(forLocalChannelID: localChannelID)
                 return completedState.transcript
+            }
+            // Transcript collection consumes every received byte into the transcript, so
+            // replenish the window for whatever this channel buffered on the turn just taken.
+            // A transcript larger than one initial window would otherwise stall the peer once
+            // its window reached zero.
+            if var refreshedState = self.managedSessionStates[localChannelID] {
+                try await self.replenishConsumedReceiveWindow(
+                    byteCount: Int(refreshedState.receiveWindowState.bufferedByteCount),
+                    sessionState: &refreshedState,
+                    forLocalChannelID: localChannelID,
+                    respectCancellation: false
+                )
             }
             if self.managedSessionObservationGeneration(
                 forLocalChannelID: localChannelID
@@ -1054,6 +1066,36 @@ extension SSHTransportProtocolClient {
         }
     }
 
+    // Replenishes the peer's receive window after the application has consumed `byteCount`
+    // buffered bytes from this channel, emitting WINDOW_ADJUST once the batched consumption
+    // crosses the replenish threshold. The updated window state is persisted before the send
+    // so actor reentrancy during the await cannot drop the grant.
+    private func replenishConsumedReceiveWindow(
+        byteCount: Int,
+        sessionState: inout SSHManagedSessionState,
+        forLocalChannelID localChannelID: UInt32,
+        respectCancellation: Bool
+    ) async throws {
+        let windowAdjust = byteCount > 0
+            ? try sessionState.receiveWindowState.replenishForConsumedBytes(
+                byteCount: byteCount,
+                localChannelID: sessionState.channel.localChannelID,
+                remoteChannelID: sessionState.channel.remoteChannelID
+            )
+            : nil
+        // Persist unconditionally: the caller has already drained a buffer/event from this
+        // copy, and a zero-byte consume (a control event) must still commit that drain.
+        self.managedSessionStates[localChannelID] = sessionState
+        guard let windowAdjust else {
+            return
+        }
+        try await self.sendConnectionMessage(
+            .channelWindowAdjust(windowAdjust),
+            respectCancellation: respectCancellation,
+            respectTransportSendCancellation: false
+        )
+    }
+
     func readChannelStandardOutputChunk(
         forLocalChannelID localChannelID: UInt32,
         respectCancellation: Bool = true
@@ -1063,16 +1105,35 @@ extension SSHTransportProtocolClient {
                 try self.checkCancellation()
             }
             var sessionState = try self.requireManagedSessionState(forLocalChannelID: localChannelID)
-            try sessionState.outputState.activateBufferingMode(
+            let discardedStandardErrorByteCount = try sessionState.outputState.activateBufferingMode(
                 .standardOutputChunks,
                 channelID: localChannelID
             )
+            // Standard-error bytes buffered before this chunk reader chose its mode are
+            // discarded by chunk mode; replenish their window so a discarded stream cannot
+            // silently stall the peer, then restart with freshly persisted state.
+            if discardedStandardErrorByteCount > 0 {
+                try await self.replenishConsumedReceiveWindow(
+                    byteCount: Int(discardedStandardErrorByteCount),
+                    sessionState: &sessionState,
+                    forLocalChannelID: localChannelID,
+                    respectCancellation: respectCancellation
+                )
+                continue
+            }
             let observationGeneration = sessionState.outputState.observationGeneration
 
             if !sessionState.outputState.unreadStandardOutput.isEmpty {
                 let unreadChunk = sessionState.outputState.unreadStandardOutput
                 sessionState.outputState.unreadStandardOutput.removeAll(keepingCapacity: true)
-                self.managedSessionStates[localChannelID] = sessionState
+                // Draining the buffered chunk is the consumption event that releases the
+                // peer's receive window back to it.
+                try await self.replenishConsumedReceiveWindow(
+                    byteCount: unreadChunk.count,
+                    sessionState: &sessionState,
+                    forLocalChannelID: localChannelID,
+                    respectCancellation: respectCancellation
+                )
                 return unreadChunk
             }
 
@@ -1102,7 +1163,7 @@ extension SSHTransportProtocolClient {
                 try self.checkCancellation()
             }
             var sessionState = try self.requireManagedSessionState(forLocalChannelID: localChannelID)
-            try sessionState.outputState.activateBufferingMode(
+            _ = try sessionState.outputState.activateBufferingMode(
                 .events,
                 channelID: localChannelID
             )
@@ -1110,7 +1171,21 @@ extension SSHTransportProtocolClient {
 
             if let nextEvent = sessionState.outputState.pendingEvents.first {
                 sessionState.outputState.pendingEvents.removeFirst()
-                self.managedSessionStates[localChannelID] = sessionState
+                // Consuming an event that carries channel data releases that much receive
+                // window; control events (exit status/signal, EOF) carry no window debt.
+                let consumedByteCount: Int
+                switch nextEvent {
+                case let .standardOutput(bytes), let .standardError(bytes):
+                    consumedByteCount = bytes.count
+                case .exitStatus, .exitSignal, .endOfFile:
+                    consumedByteCount = 0
+                }
+                try await self.replenishConsumedReceiveWindow(
+                    byteCount: consumedByteCount,
+                    sessionState: &sessionState,
+                    forLocalChannelID: localChannelID,
+                    respectCancellation: respectCancellation
+                )
                 return nextEvent
             }
 
