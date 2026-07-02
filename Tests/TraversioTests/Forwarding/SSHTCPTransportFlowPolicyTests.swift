@@ -9,23 +9,42 @@ import Testing
 @Suite("TCP transport flow policy")
 struct SSHTCPTransportFlowPolicyTests {
     @Test
-    func automaticOrdinaryConnectionUsesModernWhenAvailable() {
+    func automaticOrdinaryConnectionUsesModernStructuredScopeWhenAvailable() {
         let policy = SSHTCPTransportFlowPolicy.resolve(
             role: .ordinaryConnection,
             preference: .automatic,
             modernAvailable: true
         )
 
+        // An ordinary modern connection must never resolve to the escaped,
+        // reference-release-only handle; it is served through a library-owned
+        // structured scope that tears down deterministically.
         #expect(policy.selectedBackend == .modernNetworkConnection)
-        #expect(policy.ownershipModel == .escapedConnectionHandle)
-        #expect(policy.terminalCloseEvidence == .referenceReleaseOnly)
+        #expect(policy.ownershipModel == .libraryOwnedStructuredScope)
+        #expect(policy.ownershipModel != .escapedConnectionHandle)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(policy.terminalCloseEvidence != .referenceReleaseOnly)
         #expect(policy.operationCancellationIsolation == .canIgnoreCallerCancellation)
         #expect(!policy.requiresDeterministicAbort)
-        #expect(!policy.supportsDeterministicAbort)
+        #expect(policy.supportsDeterministicAbort)
         #expect(!policy.requiresSharedProtocolReceiveCancellationIsolation)
         #expect(policy.supportsSharedProtocolReceiveCancellationIsolation)
         #expect(!policy.needsStructuredRouteOwnerForDeterministicAbort)
         #expect(!policy.needsSharedProtocolReceiveCancellationIsolation)
+    }
+
+    @Test
+    func explicitModernOrdinaryConnectionUsesStructuredScopeInsteadOfEscapedHandle() {
+        let policy = SSHTCPTransportFlowPolicy.resolve(
+            role: .ordinaryConnection,
+            preference: .modern,
+            modernAvailable: true
+        )
+
+        #expect(policy.selectedBackend == .modernNetworkConnection)
+        #expect(policy.ownershipModel == .libraryOwnedStructuredScope)
+        #expect(policy.terminalCloseEvidence == .structuredScopeExit)
+        #expect(policy.supportsDeterministicAbort)
     }
 
     @Test

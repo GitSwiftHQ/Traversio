@@ -125,17 +125,14 @@ package enum SSHTCPByteStreamTransportFactory {
     ) async throws -> any SSHByteStreamTransport {
         switch policy.selectedBackend {
         case .modernNetworkConnection:
-            guard #available(
-                macOS 26.0,
-                iOS 26.0,
-                tvOS 26.0,
-                watchOS 26.0,
-                visionOS 26.0,
-                *
-            ) else {
-                throw self.unavailableModernTransportError()
-            }
-            return try NetworkTCPByteStreamTransport.connect(to: endpoint)
+            // A bare `NetworkConnection<TCP>` transport cannot be closed
+            // deterministically on Apple 26+ (there is no cancel/close API), so
+            // it is never handed out as a standalone `SSHByteStreamTransport`.
+            // Modern connections are served exclusively through a structured
+            // scope: use `makeTransportHandle`/`makeRouteRootTransportHandle`
+            // (library-owned structured scope) or `withConnected` (caller-owned
+            // structured scope), both of which tear the connection down on exit.
+            throw self.bareModernTransportUnsupportedError()
         case .legacyNWConnection:
             return try await LegacyNetworkTCPByteStreamTransport.connect(to: endpoint)
         }
@@ -154,6 +151,14 @@ package enum SSHTCPByteStreamTransportFactory {
     private static func unavailableModernTransportError() -> SSHTransportError {
         SSHTransportError.unsupportedTransportBackend(
             "The modern NetworkConnection<TCP> transport requires Apple platform release 26 or newer."
+        )
+    }
+
+    private static func bareModernTransportUnsupportedError() -> SSHTransportError {
+        SSHTransportError.unsupportedTransportBackend(
+            "The modern NetworkConnection<TCP> backend cannot be served as a bare "
+                + "transport because it has no deterministic close; use "
+                + "makeTransportHandle for structured teardown."
         )
     }
 }

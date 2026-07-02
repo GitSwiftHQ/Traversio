@@ -10,20 +10,25 @@ import Testing
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 @Test
-func networkTCPByteStreamTransportCloseReturnsPromptlyWhilePeerStaysOpen() async throws {
+func ordinaryModernTransportHandleCloseTearsDownDeterministicallyWhilePeerStaysOpen() async throws {
     let server = try await HangingPeerTCPServer.start()
     defer {
         server.stop()
     }
 
-    let transport = try NetworkTCPByteStreamTransport.connect(
-        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port)
+    // The ordinary-connection role used to resolve to an escaped modern handle
+    // whose close only nilled a reference. It now resolves to a library-owned
+    // structured scope, so `close()` deterministically tears the connection
+    // down even while the peer keeps its side open.
+    let handle = try await SSHTCPByteStreamTransportFactory.makeTransportHandle(
+        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port),
+        preference: .modern
     )
-    try await transport.send(Array("PING".utf8), endOfStream: false)
+    try await handle.transport.send(Array("PING".utf8), endOfStream: false)
     await server.waitForAcceptedConnection()
 
     let closeTask = Task {
-        await transport.close()
+        await handle.close()
         return true
     }
 
@@ -42,6 +47,25 @@ func networkTCPByteStreamTransportCloseReturnsPromptlyWhilePeerStaysOpen() async
     }
 
     #expect(didFinishClose)
+}
+
+@available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+@Test
+func factoryRefusesToVendBareModernTransportWithoutDeterministicClose() async throws {
+    // Proves the escaped-modern trap is gone: a bare modern transport (no
+    // structured scope, no cancel/close API) can never be constructed silently.
+    do {
+        _ = try await SSHTCPByteStreamTransportFactory.connect(
+            to: SSHSocketEndpoint(host: "127.0.0.1", port: 9),
+            preference: .modern
+        )
+        Issue.record("Expected a bare modern transport request to be rejected")
+    } catch let error as SSHTransportError {
+        guard case .unsupportedTransportBackend = error else {
+            Issue.record("Expected unsupportedTransportBackend, got \(error)")
+            return
+        }
+    }
 }
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
@@ -93,26 +117,34 @@ func networkTCPByteStreamTransportCloseStateClaimsEndOfStreamOnce() {
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 @Test
 func networkTCPByteStreamTransportReleasesConnectionOnClose() async throws {
-    let transport = try NetworkTCPByteStreamTransport.connect(
-        to: SSHSocketEndpoint(host: "127.0.0.1", port: 9)
-    )
-
-    await transport.close()
-    await transport.close()
-    await transport.setObservationHandler(nil)
-
-    do {
-        try await transport.send(Array("PING".utf8), endOfStream: false)
-        Issue.record("Expected send after close to fail")
-    } catch {
-        #expect(error as? SSHTransportError == .transportClosed)
+    let server = try await HangingPeerTCPServer.start()
+    defer {
+        server.stop()
     }
 
-    do {
-        _ = try await transport.receive(atLeast: 1, atMost: 4)
-        Issue.record("Expected receive after close to fail")
-    } catch {
-        #expect(error as? SSHTransportError == .transportClosed)
+    try await NetworkTCPByteStreamTransport.withConnected(
+        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port)
+    ) { transport in
+        try await transport.send(Array("PING".utf8), endOfStream: false)
+        await server.waitForAcceptedConnection()
+
+        await transport.close()
+        await transport.close()
+        await transport.setObservationHandler(nil)
+
+        do {
+            try await transport.send(Array("PING".utf8), endOfStream: false)
+            Issue.record("Expected send after close to fail")
+        } catch {
+            #expect(error as? SSHTransportError == .transportClosed)
+        }
+
+        do {
+            _ = try await transport.receive(atLeast: 1, atMost: 4)
+            Issue.record("Expected receive after close to fail")
+        } catch {
+            #expect(error as? SSHTransportError == .transportClosed)
+        }
     }
 }
 

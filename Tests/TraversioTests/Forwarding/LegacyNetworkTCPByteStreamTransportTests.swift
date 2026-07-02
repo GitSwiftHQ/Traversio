@@ -37,7 +37,8 @@ func tcpByteStreamTransportFactoryRoundTripsStreamData() async throws {
     }
 
     let transport = try await SSHTCPByteStreamTransportFactory.connect(
-        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port)
+        to: SSHSocketEndpoint(host: "127.0.0.1", port: server.port),
+        preference: .legacy
     )
 
     try await transport.send(Array("ping".utf8), endOfStream: false)

@@ -156,12 +156,18 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
             return .explicitCancellationHandle
         case .modernNetworkConnection:
             switch role {
-            case .routeRootConnection:
+            case .routeRootConnection, .ordinaryConnection:
+                // An ordinary modern connection is served through the
+                // library-owned structured scope (the route-root owner), which
+                // tears the underlying `NetworkConnection<TCP>` down
+                // deterministically on close. A bare, escaped modern handle has
+                // no cancel/close API, so it could only ever be released by
+                // dropping its last reference — leaking the socket and stranding
+                // any blocked reader. That escaped model is intentionally never
+                // produced here.
                 return .libraryOwnedStructuredScope
             case .structuredRouteRootConnection, .scopedConnection, .listener, .lifecycleControlledListener:
                 return .callerOwnedStructuredScope
-            case .ordinaryConnection:
-                return .escapedConnectionHandle
             }
         }
     }
@@ -175,6 +181,10 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         case .callerOwnedStructuredScope, .libraryOwnedStructuredScope:
             .structuredScopeExit
         case .escapedConnectionHandle:
+            // Unreachable from `resolve`: no role resolves to an escaped modern
+            // handle anymore (see `ownershipModel`). Retained only because the
+            // ownership model still models the escaped state for exhaustiveness;
+            // its close evidence would be reference-release-only if it existed.
             .referenceReleaseOnly
         }
     }
@@ -217,6 +227,9 @@ package struct SSHTCPTransportFlowPolicy: Equatable, Sendable {
         case .explicitCancellation, .structuredScopeExit:
             true
         case .referenceReleaseOnly:
+            // Unreachable from `resolve`: only an escaped modern handle carried
+            // this evidence, and no role produces one anymore. Kept for
+            // exhaustiveness over the modeled close-evidence cases.
             false
         }
     }

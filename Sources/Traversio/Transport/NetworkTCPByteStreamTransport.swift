@@ -237,13 +237,13 @@ package struct NetworkTCPByteStreamTransport: SSHCancellationControllingByteStre
         await self.close()
     }
 
-    package static func connect(
-        to endpoint: SSHSocketEndpoint
-    ) throws -> NetworkTCPByteStreamTransport {
-        let remoteEndpoint = try self.remoteEndpoint(for: endpoint)
-        let connection = NetworkConnection(to: remoteEndpoint, using: { TCP() })
-        return NetworkTCPByteStreamTransport(connection: connection)
-    }
+    // Deliberately no bare `connect(to:)`: a `NetworkConnection<TCP>` has no
+    // cancel/close API on Apple 26+, so escaping one as a standalone transport
+    // yields an object whose `close()` can only nil its own reference — the
+    // underlying connection never cancels, a blocked reader never resumes, and
+    // the socket leaks forever. Modern connections are only ever vended through
+    // the structured scope below (`withConnected` / `makeRouteRootTransportHandle`),
+    // which tears the connection down deterministically on scope exit.
 
     static func makeRouteRootTransportHandle(
         to endpoint: SSHSocketEndpoint
