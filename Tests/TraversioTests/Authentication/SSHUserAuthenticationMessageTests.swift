@@ -221,6 +221,43 @@ func userAuthenticationMessageParserRoundTripsKeyboardInteractiveInfoResponse() 
 }
 
 @Test
+func userAuthenticationMessageParserRejectsInfoRequestWithOversizedPromptCount() throws {
+    // SSH_MSG_USERAUTH_INFO_REQUEST declaring 0xFFFFFFFF prompts but carrying none.
+    // The reservation must be clamped against the remaining bytes so parsing fails
+    // with a wire error rather than attempting an enormous allocation and trapping.
+    let bytes: [UInt8] = [
+        SSHUserAuthenticationMessageID.passwordChangeRequest.rawValue,
+        0x00, 0x00, 0x00, 0x00, // name ""
+        0x00, 0x00, 0x00, 0x00, // instruction ""
+        0x00, 0x00, 0x00, 0x00, // languageTag ""
+        0xff, 0xff, 0xff, 0xff, // prompt count
+    ]
+
+    do {
+        _ = try SSHUserAuthenticationMessageParser().parseKeyboardInteractiveInfoRequest(bytes)
+        Issue.record("Expected insufficient-bytes error for oversized prompt count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
+@Test
+func userAuthenticationMessageParserRejectsInfoResponseWithOversizedResponseCount() throws {
+    // SSH_MSG_USERAUTH_INFO_RESPONSE declaring 0xFFFFFFFF responses but carrying none.
+    let bytes: [UInt8] = [
+        61,
+        0xff, 0xff, 0xff, 0xff, // response count
+    ]
+
+    do {
+        _ = try SSHUserAuthenticationMessageParser().parseKeyboardInteractiveInfoResponse(bytes)
+        Issue.record("Expected insufficient-bytes error for oversized response count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
+@Test
 func userAuthenticationMessageParserRoundTripsFailure() throws {
     let serializer = SSHUserAuthenticationMessageSerializer()
     let parser = SSHUserAuthenticationMessageParser()

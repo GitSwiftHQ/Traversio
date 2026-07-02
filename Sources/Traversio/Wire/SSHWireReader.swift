@@ -23,6 +23,23 @@ struct SSHWireReader: Sendable {
         self.readIndex == self.bytes.count
     }
 
+    /// Returns a safe `reserveCapacity` hint for an array whose elements each occupy
+    /// at least `minimumBytesPerElement` bytes on the wire.
+    ///
+    /// A wire-supplied element count is attacker-controlled and can be as large as
+    /// `UInt32.max`; reserving that many elements would attempt a huge allocation and
+    /// trap the process (remote denial of service). Because every element consumes at
+    /// least `minimumBytesPerElement` bytes, no more than
+    /// `remainingByteCount / minimumBytesPerElement` elements can actually be decoded,
+    /// so the hint is clamped to that bound. This is purely an allocation-safety guard:
+    /// the element loop still iterates `count` times and the authoritative bound remains
+    /// the reader running out of bytes (`SSHWireError.insufficientBytes`).
+    func boundedReservationCount(_ count: UInt32, minimumBytesPerElement: Int) -> Int {
+        precondition(minimumBytesPerElement > 0)
+        let upperBound = self.remainingByteCount / minimumBytesPerElement
+        return Int(min(UInt64(count), UInt64(upperBound)))
+    }
+
     mutating func readByte() throws -> UInt8 {
         try self.requireBytes(1)
 

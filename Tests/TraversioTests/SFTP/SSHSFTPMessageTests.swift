@@ -608,6 +608,44 @@ func sftpPacketParserRoundTripsChunkedVersionPacket() throws {
 }
 
 @Test
+func sftpMessageParserRejectsNameMessageWithOversizedEntryCount() throws {
+    // SSH_FXP_NAME declaring 0xFFFFFFFF entries but carrying none. The reservation
+    // must be clamped against the remaining bytes so parsing fails with a wire error
+    // instead of attempting an enormous allocation and trapping the process.
+    let bytes: [UInt8] = [
+        SSHSFTPMessageID.name.rawValue,
+        0x00, 0x00, 0x00, 0x01, // request ID
+        0xff, 0xff, 0xff, 0xff, // entry count
+    ]
+
+    do {
+        _ = try SSHSFTPMessageParser().parse(bytes)
+        Issue.record("Expected insufficient-bytes error for oversized name entry count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
+@Test
+func sftpMessageParserRejectsAttributesWithOversizedExtensionCount() throws {
+    // SSH_FXP_ATTRS whose attributes set the extended flag and then declare
+    // 0xFFFFFFFF extensions with no payload bytes remaining.
+    let bytes: [UInt8] = [
+        SSHSFTPMessageID.attributes.rawValue,
+        0x00, 0x00, 0x00, 0x01, // request ID
+        0x80, 0x00, 0x00, 0x00, // flags: extended
+        0xff, 0xff, 0xff, 0xff, // extension count
+    ]
+
+    do {
+        _ = try SSHSFTPMessageParser().parse(bytes)
+        Issue.record("Expected insufficient-bytes error for oversized extension count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
+@Test
 func sftpPacketSerializerRejectsPacketsAboveMaximumLength() throws {
     let payload = Array(repeating: UInt8(0x61), count: Int(SSHSFTPPacketSerializer.defaultMaximumPacketLength) + 1)
 

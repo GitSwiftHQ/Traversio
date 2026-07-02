@@ -172,6 +172,25 @@ func transportMessageParserRejectsTrailingBytes() throws {
 }
 
 @Test
+func transportMessageParserRejectsExtensionInfoWithOversizedEntryCount() throws {
+    let parser = SSHTransportMessageParser()
+    // SSH_MSG_EXT_INFO advertising 0xFFFFFFFF entries in a packet that carries none.
+    // The capacity reservation must be clamped against the remaining bytes so parsing
+    // fails with a wire error instead of attempting a ~100 GB allocation and trapping.
+    let bytes: [UInt8] = [
+        SSHTransportMessageID.extensionInfo.rawValue,
+        0xff, 0xff, 0xff, 0xff,
+    ]
+
+    do {
+        _ = try parser.parse(bytes)
+        Issue.record("Expected insufficient-bytes error for oversized extension count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
+@Test
 func keyExchangeInitRejectsInvalidCookieLength() throws {
     do {
         _ = try SSHKeyExchangeInitMessage(

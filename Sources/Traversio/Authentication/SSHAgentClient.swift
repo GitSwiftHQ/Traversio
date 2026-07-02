@@ -104,7 +104,9 @@ public actor SSHAgentClient {
 
         let identityCount = try reader.readUInt32()
         var identities: [SSHAgentIdentity] = []
-        identities.reserveCapacity(Int(identityCount))
+        identities.reserveCapacity(
+            reader.boundedReservationCount(identityCount, minimumBytesPerElement: 8)
+        )
 
         for _ in 0..<identityCount {
             let publicKey = try reader.readString()

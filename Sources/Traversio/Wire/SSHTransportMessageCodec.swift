@@ -105,7 +105,9 @@ struct SSHTransportMessageParser: Sendable {
         case .extensionInfo:
             let entryCount = try reader.readUInt32()
             var entries: [SSHExtensionInfoEntry] = []
-            entries.reserveCapacity(Int(entryCount))
+            entries.reserveCapacity(
+                reader.boundedReservationCount(entryCount, minimumBytesPerElement: 8)
+            )
             for _ in 0..<entryCount {
                 entries.append(
                     try SSHExtensionInfoEntry(

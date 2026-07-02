@@ -142,6 +142,33 @@ func sshClientAuthenticatesWithSSHAgentIdentity() async throws {
     #expect(signRequest.flags == 0)
 }
 
+@Test
+func sshAgentClientRejectsIdentitiesAnswerWithOversizedIdentityCount() async throws {
+    // A compromised agent answers SSH_AGENT_IDENTITIES_ANSWER with 0xFFFFFFFF
+    // identities but no identity payload. The reservation must be clamped against
+    // the remaining bytes so parsing fails with a wire error instead of attempting
+    // an enormous allocation and trapping the process.
+    var writer = SSHWireWriter()
+    writer.write(byte: 12) // SSH_AGENT_IDENTITIES_ANSWER
+    writer.write(uint32: 0xffff_ffff) // identity count
+    let server = try await FakeSSHAgentServer.start(
+        publicKey: [],
+        comment: "",
+        signatureBlob: [],
+        identitiesAnswerOverride: writer.bytes
+    )
+    defer { server.stop() }
+
+    let agent = try SSHAgentClient(socketPath: server.socketPath)
+
+    do {
+        _ = try await agent.identities()
+        Issue.record("Expected insufficient-bytes error for oversized identity count")
+    } catch {
+        #expect(error as? SSHWireError == .insufficientBytes(expected: 4, remaining: 0))
+    }
+}
+
 private struct FakeSSHAgentSignRequest: Equatable, Sendable {
     let publicKey: [UInt8]
     let data: [UInt8]
@@ -157,6 +184,7 @@ private final class FakeSSHAgentServer: @unchecked Sendable {
     private let publicKey: [UInt8]
     private let comment: String
     private let signatureBlob: [UInt8]
+    private let identitiesAnswerOverride: [UInt8]?
     private var didStop = false
     private var recordedSignRequests: [FakeSSHAgentSignRequest] = []
 
@@ -166,7 +194,8 @@ private final class FakeSSHAgentServer: @unchecked Sendable {
         queue: DispatchQueue,
         publicKey: [UInt8],
         comment: String,
-        signatureBlob: [UInt8]
+        signatureBlob: [UInt8],
+        identitiesAnswerOverride: [UInt8]?
     ) {
         self.socketPath = socketPath
         self.socketDescriptor = socketDescriptor
@@ -174,12 +203,14 @@ private final class FakeSSHAgentServer: @unchecked Sendable {
         self.publicKey = publicKey
         self.comment = comment
         self.signatureBlob = signatureBlob
+        self.identitiesAnswerOverride = identitiesAnswerOverride
     }
 
     static func start(
         publicKey: [UInt8],
         comment: String,
-        signatureBlob: [UInt8]
+        signatureBlob: [UInt8],
+        identitiesAnswerOverride: [UInt8]? = nil
     ) async throws -> FakeSSHAgentServer {
         let socketPath = "/tmp/traversio-agent-\(UUID().uuidString).sock"
         try? FileManager.default.removeItem(atPath: socketPath)
@@ -218,7 +249,8 @@ private final class FakeSSHAgentServer: @unchecked Sendable {
             queue: queue,
             publicKey: publicKey,
             comment: comment,
-            signatureBlob: signatureBlob
+            signatureBlob: signatureBlob,
+            identitiesAnswerOverride: identitiesAnswerOverride
         )
         server.start()
         return server
@@ -301,6 +333,9 @@ private final class FakeSSHAgentServer: @unchecked Sendable {
 
         switch messageID {
         case 11:
+            if let identitiesAnswerOverride = self.identitiesAnswerOverride {
+                return identitiesAnswerOverride
+            }
             var writer = SSHWireWriter()
             writer.write(byte: 12)
             writer.write(uint32: 1)

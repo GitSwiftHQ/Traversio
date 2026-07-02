@@ -563,7 +563,9 @@ package struct SSHSFTPMessageParser: Sendable {
             let requestID = try reader.readUInt32()
             let entryCount = try reader.readUInt32()
             var entries: [SSHSFTPNameEntry] = []
-            entries.reserveCapacity(Int(entryCount))
+            entries.reserveCapacity(
+                reader.boundedReservationCount(entryCount, minimumBytesPerElement: 12)
+            )
             for _ in 0..<entryCount {
                 entries.append(
                     try SSHSFTPNameEntry(
@@ -645,7 +647,9 @@ package struct SSHSFTPMessageParser: Sendable {
         var extensions: [SSHSFTPExtension] = []
         if flags & SSHSFTPFileAttributes.extendedFlag != 0 {
             let extensionCount = try reader.readUInt32()
-            extensions.reserveCapacity(Int(extensionCount))
+            extensions.reserveCapacity(
+                reader.boundedReservationCount(extensionCount, minimumBytesPerElement: 8)
+            )
             for _ in 0..<extensionCount {
                 extensions.append(
                     try SSHSFTPExtension(

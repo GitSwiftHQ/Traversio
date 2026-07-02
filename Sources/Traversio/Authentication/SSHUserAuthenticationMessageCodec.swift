@@ -229,9 +229,11 @@ struct SSHUserAuthenticationMessageParser: Sendable {
         let name = try reader.readUTF8String()
         let instruction = try reader.readUTF8String()
         let languageTag = try reader.readUTF8String()
-        let promptCount = try Int(reader.readUInt32())
+        let promptCount = try reader.readUInt32()
         var prompts: [SSHKeyboardInteractivePromptMessage] = []
-        prompts.reserveCapacity(promptCount)
+        prompts.reserveCapacity(
+            reader.boundedReservationCount(promptCount, minimumBytesPerElement: 5)
+        )
 
         for _ in 0..<promptCount {
             prompts.append(
@@ -269,9 +271,11 @@ struct SSHUserAuthenticationMessageParser: Sendable {
             )
         }
 
-        let responseCount = try Int(reader.readUInt32())
+        let responseCount = try reader.readUInt32()
         var responses: [String] = []
-        responses.reserveCapacity(responseCount)
+        responses.reserveCapacity(
+            reader.boundedReservationCount(responseCount, minimumBytesPerElement: 4)
+        )
 
         for _ in 0..<responseCount {
             responses.append(try reader.readUTF8String())
