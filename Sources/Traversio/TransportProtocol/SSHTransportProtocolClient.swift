@@ -592,9 +592,15 @@ package actor SSHTransportProtocolClient {
     var pendingBackgroundTransportFailure: (any Error & Sendable)?
     var idleRekeyTaskHandle: SSHCancellationHandle?
     var idleRekeyTaskGeneration: UInt64 = 0
+    // Incremented every time a fresh idle-rekey timer *task* is spawned. Steady-state protected
+    // activity must not spawn a new timer per packet, so this counter stays flat while a single
+    // long-lived timer is already running; tests assert on that invariant.
+    var idleRekeyTimerScheduleCount: UInt64 = 0
     var keepaliveTaskHandle: SSHCancellationHandle?
-    var keepaliveInFlightTaskHandle: SSHCancellationHandle?
     var keepaliveTaskGeneration: UInt64 = 0
+    // Incremented every time a fresh keepalive timer *task* is spawned. See the idle-rekey note
+    // above; steady-state activity re-uses the running timer rather than churning tasks.
+    var keepaliveTimerScheduleCount: UInt64 = 0
     var networkTransitionProbeInFlight = false
     var isOutboundGlobalRequestInFlight = false
     var outboundGlobalRequestWaiters = SSHActorWaiterQueue()

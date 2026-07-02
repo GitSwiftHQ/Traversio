@@ -480,6 +480,7 @@ extension SSHTransportProtocolClient {
         }
 
         let trigger = forcedTrigger
+            ?? self.mandatorySequenceNumberCeilingTrigger()
             ?? self.pendingIdleRekeyTrigger
             ?? self.automaticRekeyPolicy.nextTrigger(
                   outboundPacketCount: self.outboundEncryptedPacketCountSinceLastKeyExchange,
@@ -495,6 +496,85 @@ extension SSHTransportProtocolClient {
             try await localTransportRekeyHandler(self)
         }
         self.completedLocalRekeyCount &+= 1
+    }
+
+    /// Returns `true` when the negotiated cipher (in either direction) derives its packet nonce
+    /// solely from the 32-bit sequence number, and is therefore vulnerable to nonce/keystream
+    /// reuse if the counter is allowed to wrap. Only `chacha20-poly1305@openssh.com` qualifies:
+    /// AES-GCM uses an independent 64-bit invocation counter and AES-CTR a continuous cipher
+    /// state, neither of which repeats when the sequence number wraps.
+    func activeCipherUsesSequenceNumberNonce() -> Bool {
+        guard let algorithms = self.keyExchangeInitNegotiation?.algorithms else {
+            return false
+        }
+
+        return Self.encryptionAlgorithmUsesSequenceNumberNonce(
+            algorithms.encryptionAlgorithmClientToServer
+        ) || Self.encryptionAlgorithmUsesSequenceNumberNonce(
+            algorithms.encryptionAlgorithmServerToClient
+        )
+    }
+
+    static func encryptionAlgorithmUsesSequenceNumberNonce(_ algorithmName: String) -> Bool {
+        algorithmName == "chacha20-poly1305@openssh.com"
+    }
+
+    /// A hard, non-disable-able rekey trigger returned once a sequence-number-nonce cipher has
+    /// protected `sequenceNumberNonceRekeyCeiling` packets in either direction since the last key
+    /// exchange. This is deliberately checked ahead of (and independently of) the configured
+    /// automatic-rekey policy so that even a `.disabled` policy cannot let the 32-bit counter wrap
+    /// and reuse a nonce. Returns `nil` for ciphers whose nonce does not depend on the sequence
+    /// number.
+    func mandatorySequenceNumberCeilingTrigger() -> SSHTransportAutomaticRekeyTrigger? {
+        guard self.activeCipherUsesSequenceNumberNonce() else {
+            return nil
+        }
+
+        let ceiling = SSHTransportAutomaticRekeyPolicy.sequenceNumberNonceRekeyCeiling
+        let outboundCount = self.outboundEncryptedPacketCountSinceLastKeyExchange
+        if outboundCount >= ceiling {
+            return .mandatorySequenceNumberCeiling(currentCount: outboundCount, ceiling: ceiling)
+        }
+
+        let inboundCount = self.inboundEncryptedPacketCountSinceLastKeyExchange
+        if inboundCount >= ceiling {
+            return .mandatorySequenceNumberCeiling(currentCount: inboundCount, ceiling: ceiling)
+        }
+
+        return nil
+    }
+
+    /// Backstop for the sequence-number-nonce ceiling: if the ceiling has been reached but a rekey
+    /// cannot be initiated (no local rekey handler, not yet authenticated, or serializers missing),
+    /// refuse to protect another packet rather than silently reuse a nonce. When a rekey *is*
+    /// possible this returns without throwing and `completeLocalKeyReexchangeIfNeeded` forces the
+    /// rekey via `mandatorySequenceNumberCeilingTrigger()`.
+    func enforceSequenceNumberNonceCeilingClosedIfUnableToRekey() throws {
+        guard let trigger = self.mandatorySequenceNumberCeilingTrigger(),
+              case let .mandatorySequenceNumberCeiling(currentCount, ceiling) = trigger else {
+            return
+        }
+
+        let canRekey = self.authenticatedServiceName != nil
+            && !self.isTransportRekeyInProgress
+            && self.outboundEncryptedPacketSerializer != nil
+            && self.inboundEncryptedPacketParser != nil
+            && self.localTransportRekeyHandler != nil
+        if canRekey {
+            return
+        }
+
+        throw SSHTransportSequenceNumberNonceError.ceilingReachedWithoutRekey(
+            currentCount: currentCount,
+            ceiling: ceiling
+        )
+    }
+
+    // Test seam: primes the since-last-key-exchange packet counters so a test can drive the
+    // sequence-number-nonce ceiling without actually pushing 2^31 packets through the transport.
+    func primeEncryptedPacketCountsSinceLastKeyExchange(outbound: UInt64, inbound: UInt64) {
+        self.outboundEncryptedPacketCountSinceLastKeyExchange = outbound
+        self.inboundEncryptedPacketCountSinceLastKeyExchange = inbound
     }
 
     func receivePacket(
@@ -704,6 +784,7 @@ extension SSHTransportProtocolClient {
             respectCancellation: respectCancellation
         )
         try self.throwPendingBackgroundTransportFailureIfNeeded()
+        try self.enforceSequenceNumberNonceCeilingClosedIfUnableToRekey()
         try await self.completeLocalKeyReexchangeIfNeeded()
         try await self.waitForTransportRekeyToComplete(
             respectCancellation: respectCancellation
@@ -925,76 +1006,131 @@ extension SSHTransportProtocolClient {
         self.refreshIdleRekeySchedulingIfNeeded()
         self.refreshKeepaliveSchedulingIfNeeded()
     }
+    // Ensures a single long-lived idle-rekey timer task is running. Idempotent and cheap: while a
+    // timer is already scheduled this returns immediately, so the hot per-packet activity path does
+    // not cancel and re-spawn a task per packet. The running timer reschedules itself against the
+    // stored "last activity" timestamp.
     func refreshIdleRekeySchedulingIfNeeded() {
-        self.idleRekeyTaskHandle?.cancel()
-        self.idleRekeyTaskHandle = nil
-
         guard self.authenticatedServiceName != nil,
               self.outboundEncryptedPacketSerializer != nil,
               self.inboundEncryptedPacketParser != nil,
               !self.isTransportRekeyInProgress,
-              let idleTimeIntervalNanoseconds = self.automaticRekeyPolicy.idleTimeIntervalNanoseconds else {
+              self.automaticRekeyPolicy.idleTimeIntervalNanoseconds != nil,
+              self.idleRekeyTaskHandle == nil else {
             return
         }
 
+        self.startIdleRekeyTimerTask()
+    }
+
+    private func startIdleRekeyTimerTask() {
         self.idleRekeyTaskGeneration &+= 1
+        self.idleRekeyTimerScheduleCount &+= 1
         let generation = self.idleRekeyTaskGeneration
         let client = self
         let task = Task { [weak client] in
-            do {
-                try await Task.sleep(nanoseconds: idleTimeIntervalNanoseconds)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled, let client else {
-                return
-            }
-
-            await client.handleIdleRekeyTimerFired(expectedGeneration: generation)
+            await client?.runIdleRekeyTimerLoop(expectedGeneration: generation)
         }
         self.idleRekeyTaskHandle = SSHCancellationHandle(cancelOperation: {
             task.cancel()
         })
     }
-    func cancelIdleRekeyTask() {
-        self.idleRekeyTaskHandle?.cancel()
-        self.idleRekeyTaskHandle = nil
-        self.idleRekeyTaskGeneration &+= 1
-    }
-    func handleIdleRekeyTimerFired(expectedGeneration: UInt64) async {
-        guard expectedGeneration == self.idleRekeyTaskGeneration else {
-            return
+
+    private func runIdleRekeyTimerLoop(expectedGeneration: UInt64) async {
+        while expectedGeneration == self.idleRekeyTaskGeneration {
+            guard let idleTimeIntervalNanoseconds =
+                    self.automaticRekeyPolicy.idleTimeIntervalNanoseconds else {
+                break
+            }
+
+            let remainingNanoseconds = self.nanosecondsUntilIdleRekeyDeadline(
+                idleTimeIntervalNanoseconds: idleTimeIntervalNanoseconds
+            )
+            if remainingNanoseconds > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: remainingNanoseconds)
+                } catch {
+                    return
+                }
+                continue
+            }
+
+            switch await self.handleIdleRekeyDeadlineReached(expectedGeneration: expectedGeneration) {
+            case .reschedule:
+                // Activity raced in just before the deadline; loop to sleep out the new deadline.
+                continue
+            case .stop:
+                // Either the rekey fired (which cancels this timer via `withTransportRekeyInProgress`
+                // and bumps the generation) or the trigger was deferred to the send path.
+                return
+            }
         }
 
-        self.idleRekeyTaskHandle = nil
+        if expectedGeneration == self.idleRekeyTaskGeneration {
+            self.idleRekeyTaskHandle = nil
+        }
+    }
+
+    func nanosecondsUntilIdleRekeyDeadline(idleTimeIntervalNanoseconds: UInt64) -> UInt64 {
+        guard let idleNanoseconds = self.idleNanosecondsSinceLastProtectedActivity() else {
+            return idleTimeIntervalNanoseconds
+        }
+
+        return idleNanoseconds >= idleTimeIntervalNanoseconds
+            ? 0
+            : idleTimeIntervalNanoseconds - idleNanoseconds
+    }
+
+    private enum SSHIdleRekeyDeadlineOutcome {
+        case reschedule
+        case stop
+    }
+
+    private func handleIdleRekeyDeadlineReached(
+        expectedGeneration: UInt64
+    ) async -> SSHIdleRekeyDeadlineOutcome {
+        guard expectedGeneration == self.idleRekeyTaskGeneration else {
+            return .stop
+        }
+
         guard let trigger = self.automaticRekeyPolicy.nextTrigger(
             outboundPacketCount: self.outboundEncryptedPacketCountSinceLastKeyExchange,
             inboundPacketCount: self.inboundEncryptedPacketCountSinceLastKeyExchange,
             idleNanosecondsSinceLastActivity: self.idleNanosecondsSinceLastProtectedActivity()
         ) else {
-            self.refreshIdleRekeySchedulingIfNeeded()
-            return
+            // No trigger is due — protected activity moved the deadline forward. Keep the same timer
+            // running and let it sleep out the new deadline.
+            return .reschedule
         }
 
         guard case .idleTimeInterval = trigger else {
-            return
+            return .stop
         }
 
         if self.isTransportRekeyInProgress ||
             self.isReceivingInboundPacket ||
             self.activeConnectionMessageWaiterCount > 0 {
             self.pendingIdleRekeyTrigger = trigger
-            return
+            return .stop
         }
 
+        // Detach the handle before rekeying so the `cancelIdleRekeyTask()` inside
+        // `withTransportRekeyInProgress` does not cancel this still-running timer task.
+        self.idleRekeyTaskHandle = nil
         do {
             try await self.completeLocalKeyReexchangeIfNeeded(forcedTrigger: trigger)
         } catch is CancellationError {
-            return
+            return .stop
         } catch {
             self.recordPendingBackgroundTransportFailure(error)
         }
+        return .stop
+    }
+
+    func cancelIdleRekeyTask() {
+        self.idleRekeyTaskHandle?.cancel()
+        self.idleRekeyTaskHandle = nil
+        self.idleRekeyTaskGeneration &+= 1
     }
 
     func validateInitialStrictKeyExchangeOrdering(
@@ -1550,4 +1686,11 @@ struct SSHCancellationHandle: Sendable {
     func cancel() {
         self.cancelOperation()
     }
+}
+
+/// Raised when a sequence-number-nonce cipher (chacha20-poly1305) has protected as many packets as
+/// the hard `sequenceNumberNonceRekeyCeiling` allows but the connection is unable to rekey. The
+/// connection is failed closed rather than reusing a nonce/keystream.
+package enum SSHTransportSequenceNumberNonceError: Error, Equatable, Sendable {
+    case ceilingReachedWithoutRekey(currentCount: UInt64, ceiling: UInt64)
 }

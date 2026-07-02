@@ -7,101 +7,101 @@ extension SSHTransportProtocolClient {
     static let keepaliveRequestName = "keepalive@openssh.com"
     static let defaultNetworkTransitionProbeTimeoutNanoseconds: UInt64 = 5_000_000_000
 
+    // Ensures a single long-lived keepalive timer task is running. This is idempotent and cheap:
+    // if a timer is already scheduled it returns immediately, so the hot per-packet activity path
+    // (`noteProtectedTransportActivity`) no longer cancels and re-spawns a task per packet. The
+    // running timer reschedules itself against the stored "last activity" timestamp instead.
     func refreshKeepaliveSchedulingIfNeeded() {
-        self.keepaliveTaskHandle?.cancel()
-        self.keepaliveTaskHandle = nil
-
         guard self.authenticatedServiceName != nil,
               self.outboundEncryptedPacketSerializer != nil,
               self.inboundEncryptedPacketParser != nil,
               !self.isTransportRekeyInProgress,
-              self.keepaliveInFlightTaskHandle == nil,
-              let intervalNanoseconds = self.keepalivePolicy.intervalNanoseconds else {
+              self.keepalivePolicy.intervalNanoseconds != nil,
+              self.keepaliveTaskHandle == nil else {
             return
         }
 
+        self.startKeepaliveTimerTask()
+    }
+
+    private func startKeepaliveTimerTask() {
         self.keepaliveTaskGeneration &+= 1
+        self.keepaliveTimerScheduleCount &+= 1
         let generation = self.keepaliveTaskGeneration
         let client = self
         let task = Task { [weak client] in
-            do {
-                try await Task.sleep(nanoseconds: intervalNanoseconds)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled, let client else {
-                return
-            }
-
-            await client.handleKeepaliveTimerFired(expectedGeneration: generation)
+            await client?.runKeepaliveTimerLoop(expectedGeneration: generation)
         }
         self.keepaliveTaskHandle = SSHCancellationHandle(cancelOperation: {
             task.cancel()
         })
     }
-    func cancelKeepaliveTask() {
-        self.keepaliveTaskHandle?.cancel()
-        self.keepaliveInFlightTaskHandle?.cancel()
-        self.keepaliveTaskHandle = nil
-        self.keepaliveInFlightTaskHandle = nil
-        self.keepaliveTaskGeneration &+= 1
-    }
-    func handleKeepaliveTimerFired(expectedGeneration: UInt64) async {
-        guard expectedGeneration == self.keepaliveTaskGeneration else {
-            return
-        }
 
-        self.keepaliveTaskHandle = nil
-        guard let intervalNanoseconds = self.keepalivePolicy.intervalNanoseconds else {
-            return
-        }
-
-        let client = self
-        let task = Task { [weak client] in
-            guard let client else {
-                return
+    // One long-lived loop drives every keepalive for this connection. Each iteration recomputes the
+    // deadline from the current "last activity" timestamp: if activity has happened since, it sleeps
+    // the remaining time and re-checks (so protected traffic silently defers the keepalive without
+    // spawning any task); only once a full idle interval has genuinely elapsed does it send. The
+    // send itself awaits the reply under the configured reply timeout, preserving the teardown
+    // behavior of the previous design.
+    private func runKeepaliveTimerLoop(expectedGeneration: UInt64) async {
+        while expectedGeneration == self.keepaliveTaskGeneration {
+            guard let intervalNanoseconds = self.keepalivePolicy.intervalNanoseconds else {
+                break
             }
-            await client.performKeepaliveSend(
-                expectedGeneration: expectedGeneration,
+
+            let remainingNanoseconds = self.nanosecondsUntilKeepaliveDeadline(
                 intervalNanoseconds: intervalNanoseconds
             )
-        }
-        self.keepaliveInFlightTaskHandle = SSHCancellationHandle(cancelOperation: {
-            task.cancel()
-        })
-    }
-    func performKeepaliveSend(
-        expectedGeneration: UInt64,
-        intervalNanoseconds: UInt64
-    ) async {
-        if let idleNanoseconds = self.idleNanosecondsSinceLastProtectedActivity(),
-           idleNanoseconds < intervalNanoseconds {
-            if expectedGeneration == self.keepaliveTaskGeneration {
-                self.keepaliveInFlightTaskHandle = nil
-                self.refreshKeepaliveSchedulingIfNeeded()
+            if remainingNanoseconds > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: remainingNanoseconds)
+                } catch {
+                    return
+                }
+                continue
             }
-            return
+
+            guard expectedGeneration == self.keepaliveTaskGeneration,
+                  self.authenticatedServiceName != nil,
+                  self.outboundEncryptedPacketSerializer != nil,
+                  self.inboundEncryptedPacketParser != nil,
+                  !self.isTransportRekeyInProgress else {
+                break
+            }
+
+            do {
+                try await self.sendKeepalive(
+                    responseTimeoutNanoseconds: self.keepalivePolicy.responseTimeoutNanoseconds
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                // A keepalive reply timeout (or other send failure) is surfaced on the next
+                // foreground operation. Stop this timer; a later protected activity re-arms it.
+                self.recordPendingBackgroundTransportFailure(error)
+                break
+            }
         }
 
-        do {
-            try await self.sendKeepalive(
-                responseTimeoutNanoseconds: self.keepalivePolicy.responseTimeoutNanoseconds
-            )
-            if expectedGeneration == self.keepaliveTaskGeneration {
-                self.keepaliveInFlightTaskHandle = nil
-                self.refreshKeepaliveSchedulingIfNeeded()
-            }
-        } catch is CancellationError {
-            if expectedGeneration == self.keepaliveTaskGeneration {
-                self.keepaliveInFlightTaskHandle = nil
-            }
-        } catch {
-            if expectedGeneration == self.keepaliveTaskGeneration {
-                self.keepaliveInFlightTaskHandle = nil
-            }
-            self.recordPendingBackgroundTransportFailure(error)
+        if expectedGeneration == self.keepaliveTaskGeneration {
+            self.keepaliveTaskHandle = nil
         }
+    }
+
+    func nanosecondsUntilKeepaliveDeadline(intervalNanoseconds: UInt64) -> UInt64 {
+        guard let idleNanoseconds = self.idleNanosecondsSinceLastProtectedActivity() else {
+            return intervalNanoseconds
+        }
+
+        return idleNanoseconds >= intervalNanoseconds
+            ? 0
+            : intervalNanoseconds - idleNanoseconds
+    }
+
+    func cancelKeepaliveTask() {
+        self.keepaliveTaskHandle?.cancel()
+        self.keepaliveTaskHandle = nil
+        self.keepaliveTaskGeneration &+= 1
     }
     func sendKeepalive(
         responseTimeoutNanoseconds: UInt64?

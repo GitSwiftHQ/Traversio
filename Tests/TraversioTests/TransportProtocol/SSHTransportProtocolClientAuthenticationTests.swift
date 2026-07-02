@@ -353,13 +353,19 @@ func transportProtocolClientResetsIdleAutomaticRekeyTimerAfterProtectedActivity(
         rekeyMode: .clientInitiatedAfterAuthentication,
         strictKeyExchange: true
     )
+    // Use a wide interval with only a tiny pre-note delay: the idle-rekey timer is now deadline
+    // driven off a monotonic "last activity" timestamp rather than a per-activity Task.sleep
+    // restart, so a large interval keeps the note reliably ahead of the deadline even when the
+    // harness's own Task.sleep calls dilate heavily under full-suite load. The deferral is then
+    // measured against the monotonic clock, which does not dilate.
+    let idleIntervalNanoseconds: UInt64 = 1_000_000_000
     let client = SSHTransportProtocolClient(
         transport: transport,
         clientIdentification: try SSHIdentification(softwareVersion: "Traversio_Test"),
         automaticRekeyPolicy: SSHTransportAutomaticRekeyPolicy(
             outboundPacketThreshold: nil,
             inboundPacketThreshold: nil,
-            idleTimeIntervalNanoseconds: 500_000_000
+            idleTimeIntervalNanoseconds: idleIntervalNanoseconds
         )
     )
 
@@ -372,26 +378,73 @@ func transportProtocolClientResetsIdleAutomaticRekeyTimerAfterProtectedActivity(
         password: "s3cr3t"
     )
 
-    try? await Task.sleep(nanoseconds: 100_000_000)
+    try? await Task.sleep(nanoseconds: 25_000_000)
+    let activityUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
     await client.noteProtectedTransportActivity()
 
-    try? await Task.sleep(nanoseconds: 150_000_000)
-    #expect(await transport.rekeyClientProposal() == nil)
+    var rekeyProposalUptimeNanoseconds: UInt64?
+    var rekeyClientProposal: SSHKeyExchangeInitMessage?
+    for _ in 0..<600 {
+        if let proposal = await transport.rekeyClientProposal() {
+            rekeyProposalUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
+            rekeyClientProposal = proposal
+            break
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
 
-    let rekeyClientProposal = try #require(
-        await waitForRekeyClientProposal(on: transport)
-    )
+    let observedProposal = try #require(rekeyClientProposal)
+    let firedUptimeNanoseconds = try #require(rekeyProposalUptimeNanoseconds)
+    let deferralNanoseconds = firedUptimeNanoseconds - activityUptimeNanoseconds
     let rekeyMetrics = try #require(
-        await waitForCompletedLocalRekeyMetrics(on: client)
+        await waitForCompletedLocalRekeyMetrics(on: client, maxAttempts: 400)
     )
 
     #expect(
         authentication.outcome
             == SSHPasswordAuthenticationOutcome.success(SSHUserAuthenticationSuccessMessage())
     )
-    #expect(!rekeyClientProposal.keyExchangeAlgorithms.contains("ext-info-c"))
-    #expect(!rekeyClientProposal.keyExchangeAlgorithms.contains("kex-strict-c-v00@openssh.com"))
+    // The rekey honors the latest activity: it fires no sooner than ~one full idle interval after
+    // the note (small monotonic slack for scheduling and the 5 ms polling granularity).
+    #expect(deferralNanoseconds >= idleIntervalNanoseconds - 100_000_000)
+    #expect(!observedProposal.keyExchangeAlgorithms.contains("ext-info-c"))
+    #expect(!observedProposal.keyExchangeAlgorithms.contains("kex-strict-c-v00@openssh.com"))
     #expect(rekeyMetrics.completedLocalRekeyCount == 1)
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientIdleRekeyDeadlineResetsToLatestProtectedActivity() async throws {
+    // Deterministic (clock-injected) coverage of the reset semantics the integration test above can
+    // only observe under real timing. Protected activity rebases the monotonic "last activity"
+    // instant, which is exactly what pushes the idle-rekey deadline out by the elapsed amount.
+    let transport = ProtocolClientMockSSHByteStreamTransport(receiveChunks: [])
+    let client = SSHTransportProtocolClient(
+        transport: transport,
+        automaticRekeyPolicy: SSHTransportAutomaticRekeyPolicy(
+            outboundPacketThreshold: nil,
+            inboundPacketThreshold: nil,
+            idleTimeIntervalNanoseconds: 1_000_000_000
+        )
+    )
+
+    await client.noteProtectedTransportActivity(nowNanoseconds: 10_000_000_000)
+    #expect(
+        await client.idleNanosecondsSinceLastProtectedActivity(nowNanoseconds: 10_300_000_000)
+            == 300_000_000
+    )
+    #expect(
+        await client.nanosecondsUntilIdleRekeyDeadline(idleTimeIntervalNanoseconds: 1_000_000_000)
+            <= 1_000_000_000
+    )
+
+    // A later activity rebases the baseline, so the measured idle time — and therefore the
+    // remaining time until the deadline — reflects the newer instant, not the older one.
+    await client.noteProtectedTransportActivity(nowNanoseconds: 10_800_000_000)
+    #expect(
+        await client.idleNanosecondsSinceLastProtectedActivity(nowNanoseconds: 10_900_000_000)
+            == 100_000_000
+    )
 }
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)

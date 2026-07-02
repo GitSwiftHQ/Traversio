@@ -20,6 +20,21 @@ package struct SSHTransportAutomaticRekeyPolicy: Equatable, Sendable {
         idleTimeIntervalNanoseconds: nil
     )
 
+    /// Hard, non-disable-able ceiling on the number of packets that may be protected under a
+    /// single set of keys when the negotiated cipher derives its nonce solely from the 32-bit
+    /// packet sequence number (currently only `chacha20-poly1305@openssh.com`).
+    ///
+    /// That cipher's keystream is a function of (key, sequence-number). The sequence counters are
+    /// `UInt32` and wrap at 2^32, so protecting 2^32 packets under one key reuses a nonce and
+    /// therefore the keystream — a catastrophic, key-recovering failure. This ceiling is enforced
+    /// independently of (and regardless of) the configured `SSHTransportAutomaticRekeyPolicy`,
+    /// including `.disabled`, so a rekey is forced long before the counter can wrap. It is set to
+    /// 2^31 — half of the wrap point — leaving a 2^31-packet safety margin that dwarfs the handful
+    /// of transport packets exchanged during the rekey handshake itself. AES-GCM (independent
+    /// 64-bit invocation counter) and AES-CTR (continuous cipher state) do not derive their nonce
+    /// from the sequence number and are therefore not subject to this ceiling.
+    package static let sequenceNumberNonceRekeyCeiling: UInt64 = 1 << 31
+
     package init(
         outboundPacketThreshold: UInt64?,
         inboundPacketThreshold: UInt64?,
@@ -85,4 +100,8 @@ package enum SSHTransportAutomaticRekeyTrigger: Equatable, Sendable {
     case outboundPacketThreshold(currentCount: UInt64, threshold: UInt64)
     case inboundPacketThreshold(currentCount: UInt64, threshold: UInt64)
     case idleTimeInterval(currentNanoseconds: UInt64, thresholdNanoseconds: UInt64)
+    /// A sequence-number-nonce cipher (chacha20-poly1305) reached the hard packet ceiling below
+    /// which a rekey must be forced to avoid nonce/keystream reuse. Emitted regardless of the
+    /// configured rekey policy; see `SSHTransportAutomaticRekeyPolicy.sequenceNumberNonceRekeyCeiling`.
+    case mandatorySequenceNumberCeiling(currentCount: UInt64, ceiling: UInt64)
 }

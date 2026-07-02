@@ -633,7 +633,8 @@ actor ServiceRequestRekeyMockSSHByteStreamTransport: SSHByteStreamTransport {
         queuesInitialExtensionInfo: Bool = false,
         strictKeyExchange: Bool = false,
         channelOpenConfirmationSenderChannel: UInt32? = nil,
-        encryptedPayloadsBeforeClientInitiatedRekeyResponse: [[UInt8]] = []
+        encryptedPayloadsBeforeClientInitiatedRekeyResponse: [[UInt8]] = [],
+        encryptionAlgorithm: String = "aes128-ctr"
     ) {
         self.rekeyMode = rekeyMode
         self.queuesInitialExtensionInfo = queuesInitialExtensionInfo
@@ -647,8 +648,8 @@ actor ServiceRequestRekeyMockSSHByteStreamTransport: SSHByteStreamTransport {
                 ? ["curve25519-sha256", "kex-strict-s-v00@openssh.com"]
                 : ["curve25519-sha256"],
             serverHostKeyAlgorithms: ["ssh-ed25519"],
-            encryptionAlgorithmsClientToServer: ["aes128-ctr"],
-            encryptionAlgorithmsServerToClient: ["aes128-ctr"],
+            encryptionAlgorithmsClientToServer: [encryptionAlgorithm],
+            encryptionAlgorithmsServerToClient: [encryptionAlgorithm],
             macAlgorithmsClientToServer: ["hmac-sha2-256"],
             macAlgorithmsServerToClient: ["hmac-sha2-256"],
             compressionAlgorithmsClientToServer: ["none"],
@@ -658,8 +659,8 @@ actor ServiceRequestRekeyMockSSHByteStreamTransport: SSHByteStreamTransport {
             cookie: Array(0x30...0x3f),
             keyExchangeAlgorithms: ["curve25519-sha256"],
             serverHostKeyAlgorithms: ["ssh-ed25519"],
-            encryptionAlgorithmsClientToServer: ["aes128-ctr"],
-            encryptionAlgorithmsServerToClient: ["aes128-ctr"],
+            encryptionAlgorithmsClientToServer: [encryptionAlgorithm],
+            encryptionAlgorithmsServerToClient: [encryptionAlgorithm],
             macAlgorithmsClientToServer: ["hmac-sha2-256"],
             macAlgorithmsServerToClient: ["hmac-sha2-256"],
             compressionAlgorithmsClientToServer: ["none"],
@@ -1365,6 +1366,7 @@ func makeActivatedTransportFixture(
     strictKeyExchange: Bool = false,
     compressionAlgorithmClientToServer: String = "none",
     compressionAlgorithmServerToClient: String = "none",
+    encryptionAlgorithm: String = "aes128-ctr",
     automaticRekeyPolicy: SSHTransportAutomaticRekeyPolicy = .currentProfileDefault,
     keepalivePolicy: SSHTransportKeepalivePolicy = .disabled
 ) async throws -> (
@@ -1378,8 +1380,8 @@ func makeActivatedTransportFixture(
             ? ["curve25519-sha256", "ext-info-c", "kex-strict-c-v00@openssh.com"]
             : ["curve25519-sha256"],
         serverHostKeyAlgorithms: ["ssh-ed25519"],
-        encryptionAlgorithmsClientToServer: ["aes128-ctr"],
-        encryptionAlgorithmsServerToClient: ["aes128-ctr"],
+        encryptionAlgorithmsClientToServer: [encryptionAlgorithm],
+        encryptionAlgorithmsServerToClient: [encryptionAlgorithm],
         macAlgorithmsClientToServer: ["hmac-sha2-256"],
         macAlgorithmsServerToClient: ["hmac-sha2-256"],
         compressionAlgorithmsClientToServer: [compressionAlgorithmClientToServer],
@@ -1391,8 +1393,8 @@ func makeActivatedTransportFixture(
             ? ["curve25519-sha256", "kex-strict-s-v00@openssh.com"]
             : ["curve25519-sha256"],
         serverHostKeyAlgorithms: ["ssh-ed25519"],
-        encryptionAlgorithmsClientToServer: ["aes128-ctr"],
-        encryptionAlgorithmsServerToClient: ["aes128-ctr"],
+        encryptionAlgorithmsClientToServer: [encryptionAlgorithm],
+        encryptionAlgorithmsServerToClient: [encryptionAlgorithm],
         macAlgorithmsClientToServer: ["hmac-sha2-256"],
         macAlgorithmsServerToClient: ["hmac-sha2-256"],
         compressionAlgorithmsClientToServer: [compressionAlgorithmClientToServer],
