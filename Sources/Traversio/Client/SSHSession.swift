@@ -160,6 +160,12 @@ public struct SSHSession: Sendable {
     /// Reads the next stdout chunk from a session opened in stdout-chunk mode.
     ///
     /// Returns `nil` after stdout reaches EOF or the channel closes.
+    ///
+    /// - Important: This mode delivers stdout only. Standard error produced by
+    ///   the remote command is **not** buffered or surfaced here and is silently
+    ///   discarded. If you need stderr, use ``collectOutputUntilClose()`` (bounded
+    ///   output) or ``events`` / ``nextEvent()`` (which emit `.standardError`
+    ///   events) instead.
     public func readStandardOutputChunk() async throws -> [UInt8]? {
         try await self.lifetime.requireActive()
         return try await self.withMappedOperationFailure(scope: .session) {

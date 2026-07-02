@@ -522,8 +522,29 @@ public enum SSHClient {
             transportConfiguration: transportConfiguration
         )
         let transportObservationBuffer = SSHConnectionTransportObservationBuffer()
+        // Transport observation events must reach the state coordinator IN ORDER:
+        // its liveness/terminal logic treats previous→current transitions as
+        // ordered (a reordered viability flip can wedge `.degraded`; a reordered
+        // `.failed` can misreport the terminal snapshot). Spawning an independent
+        // `Task` per event gives no cross-task ordering guarantee, so instead we
+        // funnel events through a single FIFO async stream. `yield` is synchronous
+        // and non-blocking (the observation callback never blocks the transport),
+        // and a single forwarding task drains the stream serially into the buffer,
+        // preserving emission order end-to-end. The stream terminates when the
+        // transport releases the handler closure on `setObservationHandler(nil)`.
+        let (observationEvents, observationContinuation) = AsyncStream.makeStream(
+            of: SSHTransportObservationEvent.self,
+            bufferingPolicy: .unbounded
+        )
         await transportHandle.transport.setObservationHandler { event in
-            Task {
+            observationContinuation.yield(event)
+        }
+        // Fire-and-forget: the loop ends when the stream finishes, which happens
+        // once the transport releases the handler closure (on close/abort via
+        // `setObservationHandler(nil)`) and this function's local continuation
+        // reference is dropped on return/throw. No orphan task lingers.
+        Task {
+            for await event in observationEvents {
                 await transportObservationBuffer.record(event)
             }
         }
@@ -946,14 +967,18 @@ public enum SSHClient {
         await withCheckedContinuation { continuation in
             let gate = TaskCompletionGate(continuation)
 
-            Task {
-                await task.value
-                await gate.resume(with: true)
+            let timeoutTask = Task {
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                await gate.resume(with: false)
             }
 
             Task {
-                try? await Task.sleep(nanoseconds: nanoseconds)
-                await gate.resume(with: false)
+                await task.value
+                // Cancel the timeout sleeper as soon as the awaited work finishes
+                // so it does not linger asleep up to the full timeout on every
+                // graceful close.
+                timeoutTask.cancel()
+                await gate.resume(with: true)
             }
         }
     }

@@ -348,76 +348,15 @@ func transportProtocolClientStartsAutomaticLocalRekeyAfterAuthenticationIdleInte
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 @Test
-func transportProtocolClientResetsIdleAutomaticRekeyTimerAfterProtectedActivity() async throws {
-    let transport = ServiceRequestRekeyMockSSHByteStreamTransport(
-        rekeyMode: .clientInitiatedAfterAuthentication,
-        strictKeyExchange: true
-    )
-    // Use a wide interval with only a tiny pre-note delay: the idle-rekey timer is now deadline
-    // driven off a monotonic "last activity" timestamp rather than a per-activity Task.sleep
-    // restart, so a large interval keeps the note reliably ahead of the deadline even when the
-    // harness's own Task.sleep calls dilate heavily under full-suite load. The deferral is then
-    // measured against the monotonic clock, which does not dilate.
-    let idleIntervalNanoseconds: UInt64 = 1_000_000_000
-    let client = SSHTransportProtocolClient(
-        transport: transport,
-        clientIdentification: try SSHIdentification(softwareVersion: "Traversio_Test"),
-        automaticRekeyPolicy: SSHTransportAutomaticRekeyPolicy(
-            outboundPacketThreshold: nil,
-            inboundPacketThreshold: nil,
-            idleTimeIntervalNanoseconds: idleIntervalNanoseconds
-        )
-    )
-
-    _ = try await client.exchangeIdentifications()
-    _ = try await client.completeCurve25519KeyExchange(
-        hostKeyTrustPolicy: SSHHostKeyTrustPolicy.acceptAnyVerifiedHostKey
-    )
-    let authentication = try await client.authenticatePassword(
-        username: "root",
-        password: "s3cr3t"
-    )
-
-    try? await Task.sleep(nanoseconds: 25_000_000)
-    let activityUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-    await client.noteProtectedTransportActivity()
-
-    var rekeyProposalUptimeNanoseconds: UInt64?
-    var rekeyClientProposal: SSHKeyExchangeInitMessage?
-    for _ in 0..<600 {
-        if let proposal = await transport.rekeyClientProposal() {
-            rekeyProposalUptimeNanoseconds = DispatchTime.now().uptimeNanoseconds
-            rekeyClientProposal = proposal
-            break
-        }
-        try? await Task.sleep(nanoseconds: 5_000_000)
-    }
-
-    let observedProposal = try #require(rekeyClientProposal)
-    let firedUptimeNanoseconds = try #require(rekeyProposalUptimeNanoseconds)
-    let deferralNanoseconds = firedUptimeNanoseconds - activityUptimeNanoseconds
-    let rekeyMetrics = try #require(
-        await waitForCompletedLocalRekeyMetrics(on: client, maxAttempts: 400)
-    )
-
-    #expect(
-        authentication.outcome
-            == SSHPasswordAuthenticationOutcome.success(SSHUserAuthenticationSuccessMessage())
-    )
-    // The rekey honors the latest activity: it fires no sooner than ~one full idle interval after
-    // the note (small monotonic slack for scheduling and the 5 ms polling granularity).
-    #expect(deferralNanoseconds >= idleIntervalNanoseconds - 100_000_000)
-    #expect(!observedProposal.keyExchangeAlgorithms.contains("ext-info-c"))
-    #expect(!observedProposal.keyExchangeAlgorithms.contains("kex-strict-c-v00@openssh.com"))
-    #expect(rekeyMetrics.completedLocalRekeyCount == 1)
-}
-
-@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
-@Test
 func transportProtocolClientIdleRekeyDeadlineResetsToLatestProtectedActivity() async throws {
-    // Deterministic (clock-injected) coverage of the reset semantics the integration test above can
-    // only observe under real timing. Protected activity rebases the monotonic "last activity"
-    // instant, which is exactly what pushes the idle-rekey deadline out by the elapsed amount.
+    // Deterministic (clock-injected) coverage of the idle-rekey reset semantics. This replaces a
+    // former real-`Task.sleep` integration test that fired the rekey and measured the deferral
+    // against the wall clock; that test flaked under full-suite parallel load and its coverage is
+    // duplicated here (reset arithmetic) and by
+    // `transportProtocolClientStartsAutomaticLocalRekeyAfterAuthenticationIdleInterval` (that the
+    // deadline actually drives an end-to-end firing). Protected activity rebases the monotonic
+    // "last activity" instant, which is exactly what pushes the idle-rekey deadline out by the
+    // elapsed amount; the deadline function is a pure transform of the injectable idle measurement.
     let transport = ProtocolClientMockSSHByteStreamTransport(receiveChunks: [])
     let client = SSHTransportProtocolClient(
         transport: transport,
@@ -439,7 +378,9 @@ func transportProtocolClientIdleRekeyDeadlineResetsToLatestProtectedActivity() a
     )
 
     // A later activity rebases the baseline, so the measured idle time — and therefore the
-    // remaining time until the deadline — reflects the newer instant, not the older one.
+    // remaining time until the deadline — reflects the newer instant, not the older one. Measured
+    // from the ORIGINAL note the idle would already be 900 ms (near the 1 s deadline); measured
+    // from the rebased note it is only 100 ms, so the note deferred the deadline by ~800 ms.
     await client.noteProtectedTransportActivity(nowNanoseconds: 10_800_000_000)
     #expect(
         await client.idleNanosecondsSinceLastProtectedActivity(nowNanoseconds: 10_900_000_000)

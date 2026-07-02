@@ -210,6 +210,15 @@ package extension SSHConnectionStateEventSequence {
 package actor SSHConnectionStateCoordinator {
     private static let defaultReadySnapshot = SSHConnectionStateSnapshot(state: .ready)
 
+    // `stateEvents` is a single-consumer stream. If the app never iterates it (or
+    // iterates slowly), events would otherwise accumulate unbounded for the whole
+    // connection lifetime — path-change churn from mobile roaming makes that a real
+    // leak. Bound the buffer to the most recent events: `.bufferingNewest` drops the
+    // OLDEST on overflow, which keeps the latest transitions (and the terminal
+    // `.closed`/`.lost`/`.backgroundFailure` event, always yielded last) that
+    // reconnect logic actually acts on.
+    static let stateEventBufferCapacity = 64
+
     private final class EventEmitter: @unchecked Sendable {
         // Sendable invariant: the continuation is created once during initialization,
         // then all event emission is serialized by `SSHConnectionStateCoordinator`.
@@ -218,7 +227,10 @@ package actor SSHConnectionStateCoordinator {
 
         init() {
             let (stream, continuation) = AsyncStream.makeStream(
-                of: SSHConnectionStateEvent.self
+                of: SSHConnectionStateEvent.self,
+                bufferingPolicy: .bufferingNewest(
+                    SSHConnectionStateCoordinator.stateEventBufferCapacity
+                )
             )
             self.sequence = SSHConnectionStateEventSequence(stream: stream)
             self.continuation = continuation

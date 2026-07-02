@@ -407,6 +407,101 @@ func failedTransportObservationPublishesLostAndEndsConnectionLifetime() async th
     }
 }
 
+@Test
+func connectionTransportObservationsReachCoordinatorInEmissionOrder() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    // Consume the initial `.connected` event.
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    // Emit a rapid burst of transport observations. Under the previous design
+    // (one unstructured `Task` per event) these independent tasks could race and
+    // reach the coordinator out of order; the ordered funnel must deliver them in
+    // exactly the sequence the transport emitted them. `.ready` state changes are
+    // non-terminal and never probe, so the published stream is a clean 1:1 mirror.
+    let burstCount = 48
+    for index in 0..<burstCount {
+        await transport.emitStateChanged(.ready, detail: "obs-\(index)")
+    }
+
+    var observedDetails: [String] = []
+    while observedDetails.count < burstCount {
+        let event = try #require(try await nextConnectionStateEvent(from: collector))
+        if event.trigger == .transportStateChanged, let detail = event.snapshot.detail {
+            observedDetails.append(detail)
+        }
+    }
+
+    #expect(observedDetails == (0..<burstCount).map { "obs-\($0)" })
+
+    await connection.close()
+}
+
+@Test
+func connectionTransportObservationTerminalFailureReflectsLastEmittedState() async throws {
+    let transport = try makeAuthenticatedConnectionStateFixtureTransport()
+    let connection = try await makeFixtureConnection(transport: transport)
+    let collector = ConnectionStateEventCollector(sequence: connection.stateEvents)
+
+    _ = try await nextConnectionStateEvent(from: collector)
+
+    // A burst ending in a terminal `.failed`. Ordered delivery guarantees the
+    // terminal observation is processed last, so the reported terminal snapshot
+    // reflects the final failure rather than a reordered earlier observation.
+    for index in 0..<16 {
+        await transport.emitStateChanged(.ready, detail: "pre-\(index)")
+    }
+    await transport.emitStateChanged(.failed, detail: "terminal-failure")
+
+    var lostEvent: SSHConnectionStateEvent?
+    while true {
+        let event = try #require(try await nextConnectionStateEvent(from: collector))
+        if event.trigger == .backgroundFailure {
+            lostEvent = event
+            break
+        }
+    }
+
+    let lost = try #require(lostEvent)
+    #expect(lost.snapshot.state == .lost)
+    #expect(lost.snapshot.transportState == .failed)
+    #expect(lost.snapshot.detail?.contains("terminal-failure") == true)
+}
+
+@Test
+func connectionStateEventsBufferDropsOldestBeyondCapacity() async throws {
+    let client = SSHTransportProtocolClient(
+        transport: ProtocolClientMockSSHByteStreamTransport(receiveChunks: [])
+    )
+    let coordinator = SSHConnectionStateCoordinator(client: client, logHandler: .disabled)
+
+    // With no consumer draining `stateEvents`, the bounded `.bufferingNewest`
+    // policy must cap retained events and drop the OLDEST, so a never-iterated
+    // stream cannot leak unbounded under path-change churn (mobile roaming).
+    let capacity = SSHConnectionStateCoordinator.stateEventBufferCapacity
+    let overflow = capacity * 2
+    for index in 0..<overflow {
+        _ = await coordinator.recordTransportObservation(
+            .stateChanged(state: .ready, detail: "obs-\(index)")
+        )
+    }
+    // Finish the stream so iteration terminates deterministically.
+    await coordinator.recordExplicitClose()
+
+    var events: [SSHConnectionStateEvent] = []
+    for await event in coordinator.stateEvents {
+        events.append(event)
+    }
+
+    #expect(events.count <= capacity)
+    #expect(events.last?.trigger == .closed)
+    // Newest observations retained, oldest dropped.
+    #expect(events.contains { $0.snapshot.detail == "obs-\(overflow - 1)" })
+    #expect(!events.contains { $0.snapshot.detail == "obs-0" })
+}
+
 private actor ConnectionStateObservationFixtureTransport: SSHByteStreamTransport {
     private let base: ConnectionFixtureMockSSHByteStreamTransport
     private let initialNetworkPath: SSHTransportNetworkPath?
