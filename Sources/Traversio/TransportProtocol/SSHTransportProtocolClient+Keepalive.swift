@@ -182,17 +182,40 @@ extension SSHTransportProtocolClient {
         try await self.withOutboundGlobalRequestTurn {
             let latencyStartNanoseconds = self.latencyMeasurementStartNanoseconds()
             try await self.sendConnectionMessage(.globalRequest(request))
-            let reply = try await self.receiveGlobalRequestReplyMessage(
-                requestType: requestType,
-                timeoutNanoseconds: timeoutNanoseconds,
-                timeoutError: timeoutError
-            )
-            self.recordLatencyMeasurement(
-                startedAt: latencyStartNanoseconds,
-                source: request.requestName == Self.keepaliveRequestName ? .keepalive : .globalRequest
-            )
-            return reply
+            do {
+                let reply = try await self.receiveGlobalRequestReplyMessage(
+                    requestType: requestType,
+                    timeoutNanoseconds: timeoutNanoseconds,
+                    timeoutError: timeoutError
+                )
+                self.recordLatencyMeasurement(
+                    startedAt: latencyStartNanoseconds,
+                    source: request.requestName == Self.keepaliveRequestName ? .keepalive : .globalRequest
+                )
+                return reply
+            } catch {
+                // The request is already on the wire, but this waiter is abandoning its turn
+                // (reply timeout or cancellation). SSH global-request replies are ordered but
+                // not id-tagged, and the outbound turn is held until this closure returns, so a
+                // reply for THIS request is still coming and strictly precedes any later
+                // request's reply. Record it as outstanding-and-abandoned so the router drops it
+                // instead of mis-delivering it to the next, unrelated request.
+                self.abandonedGlobalRequestReplyCount += 1
+                throw error
+            }
         }
+    }
+
+    // Returns true if the reply the caller just observed must be discarded because it belongs to
+    // a request whose waiter already abandoned its turn. Because replies are consumed in arrival
+    // (== send) order and every abandoned request precedes the current live one, dropping this
+    // many replies before matching guarantees a reply only ever reaches its originating request.
+    func consumeAbandonedGlobalRequestReplyIfNeeded() -> Bool {
+        guard self.abandonedGlobalRequestReplyCount > 0 else {
+            return false
+        }
+        self.abandonedGlobalRequestReplyCount -= 1
+        return true
     }
 
     func probeTransportLivenessAfterNetworkChange() async throws -> Bool {

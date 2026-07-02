@@ -514,7 +514,6 @@ package actor SSHTransportProtocolClient {
         softwareVersion: TraversioRelease.sshSoftwareVersion
     )
     static let maximumRecordedDebugMessages = 16
-    static let maximumRecentlyCompletedManagedSessionChannelIDs = 256
     static let defaultForwardingFallbackKeepaliveIntervalNanoseconds: UInt64 = 15_000_000_000
 
     let transport: any SSHByteStreamTransport
@@ -550,10 +549,10 @@ package actor SSHTransportProtocolClient {
     var localTransportRekeyHandler: SSHTransportLocalRekeyHandler?
     var lastDisconnectMessage: SSHDisconnectMessage?
     var recordedDebugMessages: [SSHDebugMessage] = []
+    // Allocated monotonically and never reused, so this doubles as a high-water mark: any ID
+    // below it was allocated at some point (see isCompletedManagedSessionChannelID).
     var nextLocalChannelID: UInt32 = 0
     var managedSessionStates: [UInt32: SSHManagedSessionState] = [:]
-    var recentlyCompletedManagedSessionChannelIDs: Set<UInt32> = []
-    var recentlyCompletedManagedSessionChannelIDOrder: [UInt32] = []
     var activeRemoteTCPIPForwards: Set<SSHTCPIPForwardingRequest> = []
     var remoteTCPIPForwardCancellationRequestsInFlight: Set<SSHTCPIPForwardingRequest> = []
     var pendingForwardedTCPIPChannels:
@@ -563,10 +562,16 @@ package actor SSHTransportProtocolClient {
     var pendingForwardedStreamLocalChannels:
         [SSHStreamLocalForwardingRequest: [SSHAcceptedForwardedStreamLocalChannel]] = [:]
     var pendingManagedSessionLocalChannelIDs: Set<UInt32> = []
+    var abandonedManagedSessionLocalChannelIDs: Set<UInt32> = []
     var pendingChannelOpenResponses: [UInt32: SSHPendingChannelOpenResponse] = [:]
     var pendingChannelRequestReplies: [UInt32: [SSHPendingChannelRequestReply]] = [:]
     var pendingPreManagedSessionMessages: [UInt32: [SSHConnectionMessage]] = [:]
     var pendingGlobalRequestReplies: [SSHConnectionMessage] = []
+    // Number of outbound global requests whose waiter timed out / was cancelled after the
+    // request reached the wire. SSH global-request replies are ordered but not id-tagged, so
+    // this many incoming replies must be dropped before matching a live waiter — otherwise a
+    // late reply is mis-delivered to the next, unrelated request.
+    var abandonedGlobalRequestReplyCount = 0
     var activeGlobalRequestReplyWaiterCount = 0
     var deferredConnectionMessagesDuringTransportRekey: [SSHConnectionMessage] = []
     var pendingConnectionMessagesAfterTransportRekey: [SSHConnectionMessage] = []

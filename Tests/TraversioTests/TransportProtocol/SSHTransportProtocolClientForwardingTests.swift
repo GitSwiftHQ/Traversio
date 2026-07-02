@@ -1664,3 +1664,374 @@ func transportProtocolClientSurfacesDirectTCPIPOpenFailure() async throws {
         #expect(error as? SSHConnectionError == .channelOpenFailure(failure))
     }
 }
+
+// Cancelling a remote forward that still has an accepted-but-unhanded forwarded channel
+// queued must tear that channel down (CHANNEL_CLOSE and managed-session state removed) instead of
+// leaving it confirmed-open and leaking managed-session state until connection close.
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientCancelTCPIPForwardDrainsQueuedForwardedChannel() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let requestSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+    )
+    let cancelSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+    )
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: [
+            serviceAcceptPayload,
+            authSuccessPayload,
+            requestSuccessPayload,
+            cancelSuccessPayload,
+        ]
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+    let activeForward = try await fixture.client.requestTCPIPForward(
+        addressToBind: "127.0.0.1",
+        portToBind: 8022
+    )
+
+    // Simulate an inbound forwarded-tcpip open that is fully accepted while no accept() caller is
+    // waiting: it is confirmed-open, registered as a managed session, and queued.
+    let forwardedOpen = SSHChannelOpenMessage(
+        channelType: "forwarded-tcpip",
+        senderChannel: 90,
+        initialWindowSize: 1_048_576,
+        maximumPacketSize: 32_768,
+        channelTypeData: {
+            var writer = SSHWireWriter()
+            writer.write(utf8: "127.0.0.1")
+            writer.write(uint32: 8022)
+            writer.write(utf8: "198.51.100.7")
+            writer.write(uint32: 62001)
+            return writer.bytes
+        }()
+    )
+    _ = try await fixture.client.queueForwardedTCPIPChannelOpenIfActive(
+        forwardedOpen,
+        localInitialWindowSize: 1_048_576,
+        localMaximumPacketSize: 32_768
+    )
+
+    // Precondition: the queued channel is confirmed-open and its managed-session state exists.
+    #expect(await fixture.client.managedSessionStates[0] != nil)
+    #expect(await fixture.client.pendingForwardedTCPIPChannels[activeForward]?.count == 1)
+
+    try await fixture.client.cancelTCPIPForward(activeForward)
+
+    // The queued channel must be closed and its state removed, not leaked.
+    #expect(await fixture.client.managedSessionStates[0] == nil)
+    #expect(await fixture.client.pendingForwardedTCPIPChannels[activeForward] == nil)
+
+    let sentMessages = await sentForwardingConnectionMessages(
+        from: fixture.transport,
+        activation: fixture.activation,
+        initialSequenceNumber: 1
+    )
+    #expect(
+        sentMessages.contains { message in
+            if case let .channelClose(close) = message {
+                return close.recipientChannel == 90
+            }
+            return false
+        }
+    )
+}
+
+// A global request whose waiter times out abandons its turn while its reply may still be in
+// flight. When that stale reply arrives it must NOT be handed to the next, unrelated global
+// request (which would, e.g., adopt attempt 1's bound port as attempt 2's answer).
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientDoesNotDeliverAbandonedGlobalRequestReplyToNextRequest() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let setupPayloads = [serviceAcceptPayload, authSuccessPayload]
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks,
+        responseTimeoutNanoseconds: 100_000_000
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
+    )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+
+    // Attempt 1 times out: its request is on the wire but no reply is delivered yet.
+    do {
+        _ = try await fixture.client.requestTCPIPForward(
+            addressToBind: "127.0.0.1",
+            portToBind: 0
+        )
+        Issue.record("Expected attempt 1 to time out.")
+    } catch {
+        #expect(
+            error as? SSHTimeoutError
+                == .globalRequestReply(
+                    requestType: "tcpip-forward",
+                    durationNanoseconds: 100_000_000
+                )
+        )
+    }
+
+    // Attempt 1's LATE reply arrives (bound port 47000), followed by attempt 2's real reply
+    // (bound port 48000). Consumption order matches send order, so the stale reply is first.
+    var staleReplyWriter = SSHWireWriter()
+    staleReplyWriter.write(uint32: 47_000)
+    let staleReplyPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: staleReplyWriter.bytes))
+    )
+    var liveReplyWriter = SSHWireWriter()
+    liveReplyWriter.write(uint32: 48_000)
+    let liveReplyPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: liveReplyWriter.bytes))
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: staleReplyPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: liveReplyPayload),
+            endOfStream: false
+        ),
+    ])
+
+    // Attempt 2 must receive its OWN reply (48000), not attempt 1's abandoned reply (47000).
+    let secondForward = try await fixture.client.requestTCPIPForward(
+        addressToBind: "127.0.0.1",
+        portToBind: 0
+    )
+    #expect(
+        secondForward == SSHTCPIPForwardingRequest(
+            addressToBind: "127.0.0.1",
+            portToBind: 48_000
+        )
+    )
+}
+
+// After churning far more than the former 256-entry completed-channel LRU, a late WINDOW_ADJUST
+// for one of the earliest completed channels must be tolerated and must NOT fail an unrelated,
+// healthy in-flight channel open with unknownChannel.
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientToleratesLateMessageForEvictedCompletedChannel() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let churnCount: UInt32 = 260
+    var serverPayloads: [[UInt8]] = [serviceAcceptPayload, authSuccessPayload]
+    for index in 0..<churnCount {
+        serverPayloads.append(
+            try SSHConnectionMessageSerializer().serialize(
+                .channelOpenConfirmation(
+                    SSHChannelOpenConfirmationMessage(
+                        recipientChannel: index,
+                        senderChannel: 1_000 + index,
+                        initialWindowSize: 1_048_576,
+                        maximumPacketSize: 32_768,
+                        channelTypeData: []
+                    )
+                )
+            )
+        )
+        serverPayloads.append(
+            try SSHConnectionMessageSerializer().serialize(
+                .channelClose(SSHChannelCloseMessage(recipientChannel: index))
+            )
+        )
+    }
+    // A late window-adjust for the long-evicted channel 0, interleaved before the healthy open's
+    // confirmation.
+    serverPayloads.append(
+        try SSHConnectionMessageSerializer().serialize(
+            .channelWindowAdjust(
+                SSHChannelWindowAdjustMessage(recipientChannel: 0, bytesToAdd: 1_024)
+            )
+        )
+    )
+    serverPayloads.append(
+        try SSHConnectionMessageSerializer().serialize(
+            .channelOpenConfirmation(
+                SSHChannelOpenConfirmationMessage(
+                    recipientChannel: churnCount,
+                    senderChannel: 5_000,
+                    initialWindowSize: 1_048_576,
+                    maximumPacketSize: 32_768,
+                    channelTypeData: []
+                )
+            )
+        )
+    )
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: serverPayloads
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    for index in 0..<churnCount {
+        let channel = try await fixture.client.openDirectTCPIPChannel(
+            target: SSHSocketEndpoint(host: "db.internal", port: 5432),
+            originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+        )
+        #expect(channel.channel.localChannelID == index)
+        #expect(try await channel.readChunk() == nil)
+    }
+
+    // The healthy open must succeed even though a late message for evicted channel 0 arrives
+    // interleaved with its confirmation.
+    let healthyChannel = try await fixture.client.openDirectTCPIPChannel(
+        target: SSHSocketEndpoint(host: "db.internal", port: 5432),
+        originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+    )
+    #expect(healthyChannel.channel.localChannelID == churnCount)
+    #expect(await fixture.client.managedSessionStates[churnCount] != nil)
+}
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientClosesLateConfirmationForAbandonedChannelOpen() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let setupPayloads = [serviceAcceptPayload, authSuccessPayload]
+    let responseTimeoutNanoseconds: UInt64 = 50_000_000
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks,
+        responseTimeoutNanoseconds: responseTimeoutNanoseconds
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
+    )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+
+    do {
+        _ = try await fixture.client.openDirectTCPIPChannel(
+            target: SSHSocketEndpoint(host: "db.internal", port: 5432),
+            originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+        )
+        Issue.record("Expected the first channel open to time out.")
+    } catch {
+        #expect(
+            error as? SSHTimeoutError
+                == .channelOpenResponse(durationNanoseconds: responseTimeoutNanoseconds)
+        )
+    }
+    #expect(await fixture.client.abandonedManagedSessionLocalChannelIDs.contains(0))
+
+    let staleConfirmationPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelOpenConfirmation(
+            SSHChannelOpenConfirmationMessage(
+                recipientChannel: 0,
+                senderChannel: 9_000,
+                initialWindowSize: 1_048_576,
+                maximumPacketSize: 32_768,
+                channelTypeData: []
+            )
+        )
+    )
+    let staleClosePayload = try SSHConnectionMessageSerializer().serialize(
+        .channelClose(SSHChannelCloseMessage(recipientChannel: 0))
+    )
+    let liveConfirmationPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelOpenConfirmation(
+            SSHChannelOpenConfirmationMessage(
+                recipientChannel: 1,
+                senderChannel: 9_001,
+                initialWindowSize: 1_048_576,
+                maximumPacketSize: 32_768,
+                channelTypeData: []
+            )
+        )
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: staleConfirmationPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: staleClosePayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: liveConfirmationPayload),
+            endOfStream: false
+        ),
+    ])
+
+    let liveChannel = try await fixture.client.openDirectTCPIPChannel(
+        target: SSHSocketEndpoint(host: "db.internal", port: 5432),
+        originator: SSHSocketEndpoint(host: "127.0.0.1", port: 61321)
+    )
+
+    #expect(liveChannel.channel.localChannelID == 1)
+    #expect(liveChannel.channel.remoteChannelID == 9_001)
+    #expect(await !fixture.client.abandonedManagedSessionLocalChannelIDs.contains(0))
+
+    let sentPayloads = await fixture.transport.sentPayloads()
+    var parser = try SSHInboundEncryptedPacketParser(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .clientToServer,
+        initialSequenceNumber: 1
+    )
+    parser.append(bytes: sentPayloads.dropFirst(2).flatMap { $0 })
+
+    var sentConnectionMessages: [SSHConnectionMessage] = []
+    while let packet = try parser.nextPacket() {
+        if let message = try? SSHConnectionMessageParser().parse(packet.payload) {
+            sentConnectionMessages.append(message)
+        }
+    }
+
+    #expect(
+        sentConnectionMessages.contains(
+            .channelClose(SSHChannelCloseMessage(recipientChannel: 9_000))
+        )
+    )
+}

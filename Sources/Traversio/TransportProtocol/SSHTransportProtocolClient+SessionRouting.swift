@@ -13,7 +13,7 @@ extension SSHTransportProtocolClient {
         guard var sessionState = self.managedSessionStates[localChannelID] else {
             if self.shouldIgnoreLateManagedSessionMessage(
                 message,
-                forRecentlyCompletedLocalChannelID: localChannelID
+                forCompletedLocalChannelID: localChannelID
             ) {
                 return nil
             }
@@ -73,8 +73,7 @@ extension SSHTransportProtocolClient {
         respectCancellation: Bool = false
     ) async throws -> Bool {
         guard let localChannelID = self.managedSessionLocalChannelIDIfPresent(from: message),
-              self.managedSessionStates[localChannelID] != nil ||
-                self.recentlyCompletedManagedSessionChannelIDs.contains(localChannelID) else {
+              self.isActiveOrCompletedManagedSessionChannelID(localChannelID) else {
             return false
         }
 
@@ -117,10 +116,7 @@ extension SSHTransportProtocolClient {
                         if let localChannelID = self.managedSessionLocalChannelIDIfPresent(
                             from: message
                         ),
-                            self.managedSessionStates[localChannelID] != nil ||
-                            self.recentlyCompletedManagedSessionChannelIDs.contains(
-                                localChannelID
-                            ) {
+                            self.isActiveOrCompletedManagedSessionChannelID(localChannelID) {
                             return SSHInboundWaitOutcome.value(
                                 try await self.routeManagedSessionMessage(
                                     message,
@@ -128,8 +124,10 @@ extension SSHTransportProtocolClient {
                                 )
                             )
                         }
-                        if self.enqueuePendingChannelOpenResponse(from: message) ||
-                            self.enqueuePendingChannelRequestReply(from: message) ||
+                        if try await self.enqueuePendingChannelOpenResponse(from: message) {
+                            return .value(nil)
+                        }
+                        if self.enqueuePendingChannelRequestReply(from: message) ||
                             self.enqueuePendingPreManagedSessionMessage(from: message) {
                             return .value(nil)
                         }
@@ -183,13 +181,14 @@ extension SSHTransportProtocolClient {
                 try await self.handleIncomingChannelOpenWhileWaiting(open)
             default:
                 if let localChannelID = self.managedSessionLocalChannelIDIfPresent(from: message),
-                   self.managedSessionStates[localChannelID] != nil ||
-                    self.recentlyCompletedManagedSessionChannelIDs.contains(localChannelID) {
+                   self.isActiveOrCompletedManagedSessionChannelID(localChannelID) {
                     _ = try await self.routeManagedSessionMessage(message)
                     continue
                 }
-                if self.enqueuePendingChannelOpenResponse(from: message) ||
-                    self.enqueuePendingChannelRequestReply(from: message) ||
+                if try await self.enqueuePendingChannelOpenResponse(from: message) {
+                    continue
+                }
+                if self.enqueuePendingChannelRequestReply(from: message) ||
                     self.enqueuePendingPreManagedSessionMessage(from: message) {
                     continue
                 }
@@ -289,26 +288,35 @@ extension SSHTransportProtocolClient {
     func removeManagedSessionState(
         forLocalChannelID localChannelID: UInt32
     ) {
-        guard self.managedSessionStates.removeValue(forKey: localChannelID) != nil else {
-            return
-        }
+        // A completed channel needs no per-ID bookkeeping: because local channel IDs are
+        // allocated monotonically and never reused, "already completed" is derivable from the
+        // nextLocalChannelID high-water mark (see isCompletedManagedSessionChannelID). This
+        // replaces the former bounded LRU, which could evict knowledge of a still-relevant
+        // completed channel under heavy short-lived-channel churn and then fail an unrelated
+        // in-flight operation with unknownChannel when a late message for it arrived.
+        self.managedSessionStates.removeValue(forKey: localChannelID)
+    }
 
-        self.recentlyCompletedManagedSessionChannelIDs.insert(localChannelID)
-        self.recentlyCompletedManagedSessionChannelIDOrder.append(localChannelID)
+    // A message references a channel we already completed and forgot: its ID was allocated at
+    // some point (below the monotonic high-water mark), it is not currently active, and it is
+    // not still mid-open. An ID at/above the mark was never allocated and is genuinely unknown.
+    func isCompletedManagedSessionChannelID(_ localChannelID: UInt32) -> Bool {
+        localChannelID < self.nextLocalChannelID
+            && self.managedSessionStates[localChannelID] == nil
+            && !self.pendingManagedSessionLocalChannelIDs.contains(localChannelID)
+            && !self.abandonedManagedSessionLocalChannelIDs.contains(localChannelID)
+    }
 
-        if self.recentlyCompletedManagedSessionChannelIDOrder.count >
-            Self.maximumRecentlyCompletedManagedSessionChannelIDs {
-            let evictedLocalChannelID =
-                self.recentlyCompletedManagedSessionChannelIDOrder.removeFirst()
-            self.recentlyCompletedManagedSessionChannelIDs.remove(evictedLocalChannelID)
-        }
+    func isActiveOrCompletedManagedSessionChannelID(_ localChannelID: UInt32) -> Bool {
+        self.managedSessionStates[localChannelID] != nil
+            || self.isCompletedManagedSessionChannelID(localChannelID)
     }
 
     func shouldIgnoreLateManagedSessionMessage(
         _ message: SSHConnectionMessage,
-        forRecentlyCompletedLocalChannelID localChannelID: UInt32
+        forCompletedLocalChannelID localChannelID: UInt32
     ) -> Bool {
-        guard self.recentlyCompletedManagedSessionChannelIDs.contains(localChannelID) else {
+        guard self.isCompletedManagedSessionChannelID(localChannelID) else {
             return false
         }
 
@@ -323,14 +331,27 @@ extension SSHTransportProtocolClient {
 
     func enqueuePendingChannelOpenResponse(
         from message: SSHConnectionMessage
-    ) -> Bool {
+    ) async throws -> Bool {
         switch message {
         case let .channelOpenConfirmation(confirmation):
+            if self.abandonedManagedSessionLocalChannelIDs.remove(confirmation.recipientChannel) != nil {
+                try await self.sendConnectionMessage(
+                    .channelClose(
+                        SSHChannelCloseMessage(recipientChannel: confirmation.senderChannel)
+                    ),
+                    respectCancellation: false,
+                    respectTransportSendCancellation: false
+                )
+                return true
+            }
             self.pendingChannelOpenResponses[confirmation.recipientChannel] = .confirmation(
                 confirmation
             )
             return true
         case let .channelOpenFailure(failure):
+            if self.abandonedManagedSessionLocalChannelIDs.remove(failure.recipientChannel) != nil {
+                return true
+            }
             self.pendingChannelOpenResponses[failure.recipientChannel] = .failure(failure)
             return true
         default:
@@ -381,10 +402,14 @@ extension SSHTransportProtocolClient {
     }
 
     func abandonPendingManagedSessionChannel(localChannelID: UInt32) {
+        let hasManagedSessionState = self.managedSessionStates[localChannelID] != nil
         self.pendingManagedSessionLocalChannelIDs.remove(localChannelID)
         self.pendingChannelOpenResponses.removeValue(forKey: localChannelID)
         self.pendingChannelRequestReplies.removeValue(forKey: localChannelID)
         self.pendingPreManagedSessionMessages.removeValue(forKey: localChannelID)
+        if !hasManagedSessionState {
+            self.abandonedManagedSessionLocalChannelIDs.insert(localChannelID)
+        }
     }
 
     func requireManagedSessionState(

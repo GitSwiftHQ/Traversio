@@ -1368,7 +1368,8 @@ func makeActivatedTransportFixture(
     compressionAlgorithmServerToClient: String = "none",
     encryptionAlgorithm: String = "aes128-ctr",
     automaticRekeyPolicy: SSHTransportAutomaticRekeyPolicy = .currentProfileDefault,
-    keepalivePolicy: SSHTransportKeepalivePolicy = .disabled
+    keepalivePolicy: SSHTransportKeepalivePolicy = .disabled,
+    responseTimeoutNanoseconds: UInt64? = nil
 ) async throws -> (
     client: SSHTransportProtocolClient,
     transport: ProtocolClientMockSSHByteStreamTransport,
@@ -1462,7 +1463,8 @@ func makeActivatedTransportFixture(
     let client = SSHTransportProtocolClient(
         transport: transport,
         automaticRekeyPolicy: automaticRekeyPolicy,
-        keepalivePolicy: keepalivePolicy
+        keepalivePolicy: keepalivePolicy,
+        responseTimeoutNanoseconds: responseTimeoutNanoseconds
     )
 
     _ = try await client.exchangeIdentifications()

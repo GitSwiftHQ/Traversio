@@ -355,6 +355,11 @@ extension SSHTransportProtocolClient {
             if let pendingReply = self.popPendingGlobalRequestReply() {
                 switch pendingReply {
                 case .requestSuccess, .requestFailure:
+                    if self.consumeAbandonedGlobalRequestReplyIfNeeded() {
+                        // Stale reply for an abandoned request; drop it and keep waiting for
+                        // this request's own reply.
+                        continue
+                    }
                     return pendingReply
                 default:
                     break
@@ -382,21 +387,25 @@ extension SSHTransportProtocolClient {
 
                 switch message {
                 case .requestSuccess, .requestFailure:
+                    if self.consumeAbandonedGlobalRequestReplyIfNeeded() {
+                        // Stale reply for an abandoned request; drop it rather than deliver it
+                        // to this unrelated request.
+                        return SSHInboundWaitOutcome.continueWaiting
+                    }
                     return SSHInboundWaitOutcome.value(message)
                 case let .channelOpen(open):
                     try await self.handleIncomingChannelOpenWhileWaiting(open)
                     return SSHInboundWaitOutcome.continueWaiting
                 default:
                     if let localChannelID = self.managedSessionLocalChannelIDIfPresent(from: message),
-                       self.managedSessionStates[localChannelID] != nil ||
-                        self.recentlyCompletedManagedSessionChannelIDs.contains(
-                            localChannelID
-                        ) {
+                       self.isActiveOrCompletedManagedSessionChannelID(localChannelID) {
                         _ = try await self.routeManagedSessionMessage(message)
                         return SSHInboundWaitOutcome.continueWaiting
                     }
-                    if self.enqueuePendingChannelOpenResponse(from: message) ||
-                        self.enqueuePendingChannelRequestReply(from: message) ||
+                    if try await self.enqueuePendingChannelOpenResponse(from: message) {
+                        return SSHInboundWaitOutcome.continueWaiting
+                    }
+                    if self.enqueuePendingChannelRequestReply(from: message) ||
                         self.enqueuePendingPreManagedSessionMessage(from: message) {
                         return SSHInboundWaitOutcome.continueWaiting
                     }
@@ -485,9 +494,7 @@ extension SSHTransportProtocolClient {
                 switch message {
                 case let .channelOpenConfirmation(confirmation):
                     guard confirmation.recipientChannel == localChannelID else {
-                        self.pendingChannelOpenResponses[confirmation.recipientChannel] = .confirmation(
-                            confirmation
-                        )
+                        _ = try await self.enqueuePendingChannelOpenResponse(from: message)
                         return SSHInboundWaitOutcome<SSHChannel>.continueWaiting
                     }
 
@@ -503,9 +510,7 @@ extension SSHTransportProtocolClient {
                     )
                 case let .channelOpenFailure(failure):
                     guard failure.recipientChannel == localChannelID else {
-                        self.pendingChannelOpenResponses[failure.recipientChannel] = .failure(
-                            failure
-                        )
+                        _ = try await self.enqueuePendingChannelOpenResponse(from: message)
                         return SSHInboundWaitOutcome<SSHChannel>.continueWaiting
                     }
 
@@ -523,10 +528,7 @@ extension SSHTransportProtocolClient {
                     return SSHInboundWaitOutcome.continueWaiting
                 default:
                     if let interleavedLocalChannelID = self.managedSessionLocalChannelIDIfPresent(from: message),
-                       self.managedSessionStates[interleavedLocalChannelID] != nil ||
-                        self.recentlyCompletedManagedSessionChannelIDs.contains(
-                            interleavedLocalChannelID
-                        ) {
+                       self.isActiveOrCompletedManagedSessionChannelID(interleavedLocalChannelID) {
                         _ = try await self.routeManagedSessionMessage(message)
                         return SSHInboundWaitOutcome.continueWaiting
                     }
@@ -697,15 +699,11 @@ extension SSHTransportProtocolClient {
                         .windowAdjust(adjust)
                     )
                     return SSHInboundWaitOutcome<UInt32>.continueWaiting
-                case let .channelOpenConfirmation(confirmation):
-                    self.pendingChannelOpenResponses[confirmation.recipientChannel] = .confirmation(
-                        confirmation
-                    )
+                case .channelOpenConfirmation:
+                    _ = try await self.enqueuePendingChannelOpenResponse(from: message)
                     return SSHInboundWaitOutcome<UInt32>.continueWaiting
-                case let .channelOpenFailure(failure):
-                    self.pendingChannelOpenResponses[failure.recipientChannel] = .failure(
-                        failure
-                    )
+                case .channelOpenFailure:
+                    _ = try await self.enqueuePendingChannelOpenResponse(from: message)
                     return SSHInboundWaitOutcome<UInt32>.continueWaiting
                 case let .channelOpen(open):
                     try await self.handleIncomingChannelOpenWhileWaiting(open)
@@ -714,10 +712,7 @@ extension SSHTransportProtocolClient {
                     if let interleavedLocalChannelID = self.managedSessionLocalChannelIDIfPresent(
                         from: message
                     ),
-                        self.managedSessionStates[interleavedLocalChannelID] != nil ||
-                        self.recentlyCompletedManagedSessionChannelIDs.contains(
-                            interleavedLocalChannelID
-                        ) {
+                        self.isActiveOrCompletedManagedSessionChannelID(interleavedLocalChannelID) {
                         _ = try await self.routeManagedSessionMessage(message)
                         return SSHInboundWaitOutcome<UInt32>.continueWaiting
                     }
@@ -758,6 +753,7 @@ extension SSHTransportProtocolClient {
         )
 
         self.pendingManagedSessionLocalChannelIDs.remove(channel.localChannelID)
+        self.abandonedManagedSessionLocalChannelIDs.remove(channel.localChannelID)
         var sessionState = SSHManagedSessionState(
             channel: channel,
             receiveWindowState: SSHSessionReceiveWindowState(
