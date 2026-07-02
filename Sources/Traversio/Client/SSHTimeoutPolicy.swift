@@ -9,7 +9,14 @@ import Foundation
 /// Timeout configuration for connection setup and protocol responses.
 ///
 /// The default profile bounds connection setup but leaves per-response timeouts
-/// disabled unless the caller opts in.
+/// disabled unless the caller opts in. A `nil` `responseTimeInterval` is
+/// deliberate: enforcing a per-response timeout would make the shared,
+/// mid-packet transport receive cancellable and can desync the encrypted
+/// stream. Liveness against a silent peer is instead guaranteed by the default
+/// background keepalive (see ``SSHKeepalivePolicy/currentProfileDefault``),
+/// which fails the whole connection — and therefore every waiting operation —
+/// without ever cancelling a shared receive. Setting `responseTimeInterval`
+/// remains available for callers who explicitly want per-response deadlines.
 public struct SSHTimeoutPolicy: Equatable, Sendable {
     /// Connection Setup time interval.
     public let connectionSetupTimeInterval: TimeInterval?

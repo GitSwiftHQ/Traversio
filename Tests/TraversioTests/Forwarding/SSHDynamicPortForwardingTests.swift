@@ -404,6 +404,11 @@ func sshConnectionReleasesDynamicPortForwardListenerAfterConnectionLivenessLoss(
         username: "root",
         authentication: .password("s3cr3t"),
         hostKeyPolicy: .acceptAnyVerifiedHostKey,
+        // Opt out of the default liveness keepalive so this test exercises the
+        // forwarding fallback keepalive (which only activates when no keepalive
+        // is configured) and detects liveness loss within the short response
+        // timeout rather than waiting for the default keepalive interval.
+        keepalivePolicy: .disabled,
         timeoutPolicy: SSHTimeoutPolicy(responseTimeInterval: 0.05)
     )
     let endpointRecorder = DynamicForwardEndpointRecorder()

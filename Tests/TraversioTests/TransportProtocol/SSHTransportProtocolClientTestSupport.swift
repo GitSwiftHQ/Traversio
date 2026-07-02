@@ -215,6 +215,7 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
     private var maximumConcurrentReceiveCount = 0
     private var receiveRespectCancellationFlags: [Bool] = []
     private var closeCount = 0
+    private var isClosed = false
 
     init(
         serverPayloadsAfterNewKeys: [[UInt8]],
@@ -322,6 +323,12 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
                 return SSHByteStreamChunk(bytes: [], endOfStream: true)
             case .waitForAppendedChunks:
                 while self.receiveChunks.isEmpty {
+                    // Closing the transport (e.g. after a background liveness
+                    // failure aborts the connection) must unblock a parked
+                    // receive, mirroring a real socket returning end-of-stream.
+                    if self.isClosed {
+                        return SSHByteStreamChunk(bytes: [], endOfStream: true)
+                    }
                     if respectCancellation {
                         try Task.checkCancellation()
                     }
@@ -335,6 +342,7 @@ actor ConnectionFixtureMockSSHByteStreamTransport: SSHCancellationControllingByt
 
     func close() async {
         self.closeCount += 1
+        self.isClosed = true
     }
 
     func sentPayloads() -> [[UInt8]] {

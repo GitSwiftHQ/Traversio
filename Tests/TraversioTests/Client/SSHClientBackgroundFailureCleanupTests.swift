@@ -129,6 +129,78 @@ func sshClientInvalidatesSFTPClientAfterBackgroundKeepaliveFailure() async throw
     await connection.close()
 }
 
+@Test
+func sshClientFailsInFlightOperationsWhenSilentPeerLosesDefaultLiveness() async throws {
+    // A peer that completes setup but then goes completely silent: it never
+    // answers and never sends FIN/RST. With the default liveness keepalive this
+    // must no longer wedge in-flight operations forever — the keepalive reply
+    // times out, the connection is torn down, and every waiting operation is
+    // released with an error.
+    let openConfirmationPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelOpenConfirmation(
+            SSHChannelOpenConfirmationMessage(
+                recipientChannel: 0,
+                senderChannel: 91,
+                initialWindowSize: 1_048_576,
+                maximumPacketSize: 32_768,
+                channelTypeData: []
+            )
+        )
+    )
+    let channelSuccessPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelSuccess(SSHChannelSuccessMessage(recipientChannel: 0))
+    )
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let transport = ConnectionFixtureMockSSHByteStreamTransport(
+        serverPayloadsAfterNewKeys: [
+            serviceAcceptPayload,
+            authSuccessPayload,
+            openConfirmationPayload,
+            channelSuccessPayload,
+        ],
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+    let connection = try await makeKeepaliveConnection(transport: transport)
+    let session = try await connection.openExec("cat")
+
+    // Two operations left in-flight against the now-silent peer.
+    let readTask = Task { try await session.collectOutputUntilClose() }
+    let executeTask = Task { try await connection.execute("true") }
+
+    // Bounded by the (short) keepalive interval, not forever: the background
+    // keepalive fires, its reply times out, and the transport is closed.
+    let didClose = await waitUntil(
+        maxAttempts: backgroundKeepaliveObservationAttempts,
+        sleepNanoseconds: backgroundKeepaliveObservationSleepNanoseconds
+    ) {
+        await transport.closeCountObserved() == 1
+    }
+    #expect(didClose)
+
+    // The blocked read fails instead of hanging.
+    do {
+        _ = try await readTask.value
+        Issue.record("Expected the blocked read to fail after liveness loss.")
+    } catch {
+        // Any error is acceptable here; the guarantee is that it does not hang.
+    }
+
+    // The other in-flight operation is failed too.
+    do {
+        _ = try await executeTask.value
+        Issue.record("Expected the concurrent operation to fail after liveness loss.")
+    } catch {
+        // Any error is acceptable here; the guarantee is that it does not hang.
+    }
+
+    await connection.close()
+}
+
 private func makeAuthenticatedBackgroundFailureTransport(
     additionalServerPayloadsAfterAuth: [[UInt8]]
 ) throws -> ConnectionFixtureMockSSHByteStreamTransport {

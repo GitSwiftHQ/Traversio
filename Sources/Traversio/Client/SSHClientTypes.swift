@@ -446,7 +446,7 @@ public struct SSHClientConfiguration: Equatable, Sendable {
         compressionPreference: SSHCompressionPreference = .disabled,
         legacyAlgorithmOptions: SSHLegacyAlgorithmOptions = .disabled,
         automaticRekeyPolicy: SSHAutomaticRekeyPolicy = .currentProfileDefault,
-        keepalivePolicy: SSHKeepalivePolicy = .disabled,
+        keepalivePolicy: SSHKeepalivePolicy = .currentProfileDefault,
         timeoutPolicy: SSHTimeoutPolicy = .currentProfileDefault,
         connectionProxy: SSHConnectionProxy? = nil,
         proxyJumpHosts: [SSHProxyJumpHost] = []
@@ -477,7 +477,7 @@ public struct SSHClientConfiguration: Equatable, Sendable {
         compressionPreference: SSHCompressionPreference = .disabled,
         legacyAlgorithmOptions: SSHLegacyAlgorithmOptions = .disabled,
         automaticRekeyPolicy: SSHAutomaticRekeyPolicy = .currentProfileDefault,
-        keepalivePolicy: SSHKeepalivePolicy = .disabled,
+        keepalivePolicy: SSHKeepalivePolicy = .currentProfileDefault,
         timeoutPolicy: SSHTimeoutPolicy = .currentProfileDefault,
         connectionProxy: SSHConnectionProxy? = nil,
         proxyJumpHosts: [SSHProxyJumpHost] = []
@@ -539,7 +539,7 @@ public struct SSHProxyJumpHost: Equatable, Sendable {
         compressionPreference: SSHCompressionPreference = .disabled,
         legacyAlgorithmOptions: SSHLegacyAlgorithmOptions = .disabled,
         automaticRekeyPolicy: SSHAutomaticRekeyPolicy = .currentProfileDefault,
-        keepalivePolicy: SSHKeepalivePolicy = .disabled,
+        keepalivePolicy: SSHKeepalivePolicy = .currentProfileDefault,
         timeoutPolicy: SSHTimeoutPolicy = .currentProfileDefault
     ) {
         self.init(
@@ -566,7 +566,7 @@ public struct SSHProxyJumpHost: Equatable, Sendable {
         compressionPreference: SSHCompressionPreference = .disabled,
         legacyAlgorithmOptions: SSHLegacyAlgorithmOptions = .disabled,
         automaticRekeyPolicy: SSHAutomaticRekeyPolicy = .currentProfileDefault,
-        keepalivePolicy: SSHKeepalivePolicy = .disabled,
+        keepalivePolicy: SSHKeepalivePolicy = .currentProfileDefault,
         timeoutPolicy: SSHTimeoutPolicy = .currentProfileDefault
     ) {
         precondition(!authenticationMethods.isEmpty, "authenticationMethods must not be empty")

@@ -771,6 +771,39 @@ func sshClientConfigurationStoresKeepalivePolicy() {
 }
 
 @Test
+func sshClientConfigurationDefaultsToLivenessKeepalive() {
+    #expect(SSHKeepalivePolicy.defaultInterval == 15)
+    #expect(SSHKeepalivePolicy.currentProfileDefault.interval == 15)
+    #expect(SSHKeepalivePolicy.disabled.interval == nil)
+
+    let configuration = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("s3cr3t"),
+        hostKeyPolicy: .acceptAnyVerifiedHostKey
+    )
+
+    // The default configuration now enables a conservative liveness keepalive
+    // so a silent/half-dead peer cannot wedge operations forever.
+    #expect(configuration.keepalivePolicy == .currentProfileDefault)
+    #expect(configuration.keepalivePolicy.interval == 15)
+    // The per-response timeout stays disabled by default on purpose: enforcing
+    // one would make the shared, mid-packet transport receive cancellable and
+    // can desync the encrypted stream. Liveness is provided by the keepalive.
+    #expect(configuration.timeoutPolicy.responseTimeInterval == nil)
+
+    // Advanced callers can still opt out of any background keepalive.
+    let optOut = SSHClientConfiguration(
+        host: "example.com",
+        username: "root",
+        authentication: .password("s3cr3t"),
+        hostKeyPolicy: .acceptAnyVerifiedHostKey,
+        keepalivePolicy: .disabled
+    )
+    #expect(optOut.keepalivePolicy.interval == nil)
+}
+
+@Test
 func sshClientConfigurationStoresLegacyAlgorithmOptions() {
     let legacyAlgorithmOptions = SSHLegacyAlgorithmOptions.sshRSA
     let configuration = SSHClientConfiguration(
