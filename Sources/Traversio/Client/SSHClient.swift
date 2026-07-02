@@ -597,7 +597,8 @@ public enum SSHClient {
                     dependentCloseOperation: dependentCloseOperation,
                     gracefulCloseTimeoutNanoseconds: self.gracefulCloseTimeoutNanoseconds(
                         responseTimeoutNanoseconds: timeoutPolicy.responseTimeoutNanoseconds
-                    )
+                    ),
+                    logHandler: logHandler
                 )
             }, abortOperation: {
                 await self.abortTransportResources(
@@ -875,11 +876,12 @@ public enum SSHClient {
         )
     }
 
-    private static func closeTransportResources(
+    static func closeTransportResources(
         client: SSHTransportProtocolClient,
         transportHandle: SSHClientTransportHandle,
         dependentCloseOperation: (@Sendable () async -> Void)?,
-        gracefulCloseTimeoutNanoseconds: UInt64
+        gracefulCloseTimeoutNanoseconds: UInt64,
+        logHandler: SSHClientLogHandler
     ) async {
         await transportHandle.transport.setObservationHandler(nil)
         let hasPendingBackgroundTransportFailure =
@@ -900,7 +902,30 @@ public enum SSHClient {
             }
         }
 
-        await transportHandle.close()
+        // Closing a modern route-root transport waits for its structured scope
+        // to drop (there is no cancel/close API on `NetworkConnection<TCP>`). If
+        // that scope stalls, an unbounded `transportHandle.close()` would wedge
+        // connection teardown, so bound it like the disconnect above. We do not
+        // cancel the close task on timeout: cancelling could strand an escaped
+        // connection, so we let it drain in the background and proceed.
+        let transportCloseTask = Task {
+            await transportHandle.close()
+        }
+        let didTransportCloseFinish = await self.waitForTaskCompletion(
+            transportCloseTask,
+            upTo: gracefulCloseTimeoutNanoseconds
+        )
+        if !didTransportCloseFinish {
+            logHandler.emit(
+                level: .warning,
+                category: .transport,
+                message: "Timed out closing transport handle; proceeding with teardown.",
+                metadata: sshLogMetadata(
+                    ("timeoutNanoseconds", String(gracefulCloseTimeoutNanoseconds))
+                )
+            )
+        }
+
         await dependentCloseOperation?()
     }
 

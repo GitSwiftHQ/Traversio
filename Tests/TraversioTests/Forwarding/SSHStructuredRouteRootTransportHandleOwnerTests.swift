@@ -3,6 +3,7 @@
 // Licensed under the GNU Affero General Public License v3.0 or later.
 // See LICENSE for details.
 
+import Foundation
 import Testing
 @testable import Traversio
 
@@ -119,6 +120,77 @@ struct SSHStructuredRouteRootTransportHandleOwnerTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func ownerCloseReturnsWithinBoundWhenRunnerTeardownStalls() async throws {
+        let stall = RouteRootOwnerManualGate()
+        let diagnostics = RouteRootOwnerDiagnosticsRecorder()
+        let transport = RouteRootOwnerTestTransport(log: RouteRootOwnerTestLog())
+        let timeoutNanoseconds: UInt64 = 50_000_000
+        let owner = SSHStructuredRouteRootTransportHandleOwner<RouteRootOwnerTestTransport>(
+            teardownTimeoutNanoseconds: timeoutNanoseconds,
+            teardownDiagnosticHandler: { diagnostic in
+                diagnostics.record(diagnostic)
+            }
+        ) { handler in
+            try await handler(transport)
+            // Simulate a scope exit that blocks on an in-flight receive: the
+            // runner never returns until the test releases the gate.
+            await stall.wait()
+        }
+
+        let handle = try await owner.makeHandle()
+
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        await handle.close()
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - startedAt
+
+        // Bounded wall-clock: the close must return shortly after the backstop
+        // window, not wait for the stuck runner.
+        #expect(elapsedNanoseconds < timeoutNanoseconds * 20)
+        #expect(
+            diagnostics.recorded() == [
+                SSHStructuredRouteRootOwnerTeardownDiagnostic(
+                    operation: .close,
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
+            ]
+        )
+
+        // Release the stall so the runner exits and nothing leaks.
+        stall.release()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
+    func ownerAbortReportsTeardownTimeoutDiagnostic() async throws {
+        let stall = RouteRootOwnerManualGate()
+        let diagnostics = RouteRootOwnerDiagnosticsRecorder()
+        let transport = RouteRootOwnerTestTransport(log: RouteRootOwnerTestLog())
+        let timeoutNanoseconds: UInt64 = 50_000_000
+        let owner = SSHStructuredRouteRootTransportHandleOwner<RouteRootOwnerTestTransport>(
+            teardownTimeoutNanoseconds: timeoutNanoseconds,
+            teardownDiagnosticHandler: { diagnostic in
+                diagnostics.record(diagnostic)
+            }
+        ) { handler in
+            try await handler(transport)
+            await stall.wait()
+        }
+
+        let handle = try await owner.makeHandle()
+        await handle.abort()
+
+        #expect(
+            diagnostics.recorded() == [
+                SSHStructuredRouteRootOwnerTeardownDiagnostic(
+                    operation: .abort,
+                    timeoutNanoseconds: timeoutNanoseconds
+                )
+            ]
+        )
+
+        stall.release()
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func ownerPropagatesRunnerFailureBeforeTransportPublication() async {
         let owner = SSHStructuredRouteRootTransportHandleOwner<RouteRootOwnerTestTransport> {
             _ in
@@ -155,6 +227,58 @@ private final class RouteRootOwnerTestTransport: SSHByteStreamTransport, @unchec
 
     func abort() async {
         await self.log.record(.transportAborted)
+    }
+}
+
+private final class RouteRootOwnerDiagnosticsRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [SSHStructuredRouteRootOwnerTeardownDiagnostic] = []
+
+    func record(_ diagnostic: SSHStructuredRouteRootOwnerTeardownDiagnostic) {
+        self.lock.lock()
+        self.events.append(diagnostic)
+        self.lock.unlock()
+    }
+
+    func recorded() -> [SSHStructuredRouteRootOwnerTeardownDiagnostic] {
+        self.lock.lock()
+        defer { self.lock.unlock() }
+        return self.events
+    }
+}
+
+private final class RouteRootOwnerManualGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isReleased = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.lock.lock()
+            if self.isReleased {
+                self.lock.unlock()
+                continuation.resume()
+                return
+            }
+            self.waiters.append(continuation)
+            self.lock.unlock()
+        }
+    }
+
+    func release() {
+        self.lock.lock()
+        guard !self.isReleased else {
+            self.lock.unlock()
+            return
+        }
+        self.isReleased = true
+        let waiters = self.waiters
+        self.waiters.removeAll(keepingCapacity: false)
+        self.lock.unlock()
+
+        for waiter in waiters {
+            waiter.resume()
+        }
     }
 }
 

@@ -11,14 +11,41 @@ final class SSHStructuredRouteRootTransportHandleOwner<
     typealias Runner = @Sendable (
         _ handler: @escaping @Sendable (Transport) async throws -> Void
     ) async throws -> Void
+    typealias TeardownDiagnosticHandler = @Sendable (
+        SSHStructuredRouteRootOwnerTeardownDiagnostic
+    ) -> Void
+
+    // Deterministic close of a modern `NetworkConnection<TCP>` (Apple 26+, which
+    // exposes no cancel/close API) relies on the runner's `withNetworkConnection`
+    // scope tearing the connection down on exit. `close()`/`abort()` therefore
+    // wait for the runner task to finish. If a future OS were to block that scope
+    // exit on an in-flight receive rather than failing it (e.g. with POSIX 89),
+    // that wait would hang forever. This bounded backstop caps the wait: once the
+    // timeout elapses we record a diagnostic and return, letting the scope keep
+    // draining in the background instead of wedging the caller. We deliberately
+    // do NOT cancel the runner on a published handle (see 1.0.6) — cancelling
+    // could strand an escaped connection. Acquisition-time cancellation still
+    // cancels the runner via `cancelFromSynchronousContext`. The default is
+    // intentionally looser than `SSHClient`'s graceful-close bound, which is the
+    // fast production backstop; this only guards direct owner users.
+    static var defaultTeardownTimeoutNanoseconds: UInt64 { 5_000_000_000 }
 
     private let runner: Runner
+    private let teardownTimeoutNanoseconds: UInt64
+    private let teardownDiagnosticHandler: TeardownDiagnosticHandler?
     private let readyTransport = SSHTCPAsyncResult<Transport>()
     private let scopeGate = SSHStructuredRouteRootScopeGate()
     private let taskBox = SSHStructuredRouteRootOwnerTaskBox()
 
-    init(runner: @escaping Runner) {
+    init(
+        teardownTimeoutNanoseconds: UInt64 =
+            SSHStructuredRouteRootTransportHandleOwner.defaultTeardownTimeoutNanoseconds,
+        teardownDiagnosticHandler: TeardownDiagnosticHandler? = nil,
+        runner: @escaping Runner
+    ) {
         self.runner = runner
+        self.teardownTimeoutNanoseconds = teardownTimeoutNanoseconds
+        self.teardownDiagnosticHandler = teardownDiagnosticHandler
     }
 
     deinit {
@@ -67,18 +94,50 @@ final class SSHStructuredRouteRootTransportHandleOwner<
 
     func close() async {
         self.scopeGate.close()
-        await self.taskBox.waitUntilFinished()
+        await self.waitForRunnerTeardown(operation: .close)
     }
 
     func abort() async {
         self.scopeGate.close()
-        await self.taskBox.waitUntilFinished()
+        await self.waitForRunnerTeardown(operation: .abort)
+    }
+
+    private func waitForRunnerTeardown(
+        operation: SSHStructuredRouteRootOwnerTeardownDiagnostic.Operation
+    ) async {
+        let didFinish = await self.taskBox.waitUntilFinished(
+            upTo: self.teardownTimeoutNanoseconds
+        )
+        guard !didFinish else {
+            return
+        }
+
+        // The runner did not exit within the backstop window. We deliberately do
+        // not cancel it (that could strand an escaped connection on a published
+        // handle); the structured scope keeps draining in the background while we
+        // return so the caller's teardown is not wedged.
+        self.teardownDiagnosticHandler?(
+            SSHStructuredRouteRootOwnerTeardownDiagnostic(
+                operation: operation,
+                timeoutNanoseconds: self.teardownTimeoutNanoseconds
+            )
+        )
     }
 
     private func cancelFromSynchronousContext() {
         self.scopeGate.close()
         self.taskBox.cancel()
     }
+}
+
+struct SSHStructuredRouteRootOwnerTeardownDiagnostic: Sendable, Equatable {
+    enum Operation: String, Sendable {
+        case close
+        case abort
+    }
+
+    let operation: Operation
+    let timeoutNanoseconds: UInt64
 }
 
 private final class SSHStructuredRouteRootScopeGate: @unchecked Sendable {
@@ -187,8 +246,28 @@ private final class SSHStructuredRouteRootOwnerTaskBox: @unchecked Sendable {
         self.taskSnapshot()?.cancel()
     }
 
-    func waitUntilFinished() async {
-        await self.taskSnapshot()?.value
+    /// Waits for the owner task to finish, giving up after `nanoseconds`.
+    ///
+    /// Returns `true` if the task finished within the budget and `false` if the
+    /// wait timed out (the task is left running).
+    func waitUntilFinished(upTo nanoseconds: UInt64) async -> Bool {
+        guard let task = self.taskSnapshot() else {
+            return true
+        }
+
+        return await withCheckedContinuation { continuation in
+            let gate = SSHStructuredRouteRootOwnerCompletionGate(continuation)
+
+            Task {
+                await task.value
+                await gate.resume(with: true)
+            }
+
+            Task {
+                try? await Task.sleep(nanoseconds: nanoseconds)
+                await gate.resume(with: false)
+            }
+        }
     }
 
     private func taskSnapshot() -> Task<Void, Never>? {
@@ -196,5 +275,22 @@ private final class SSHStructuredRouteRootOwnerTaskBox: @unchecked Sendable {
         defer { self.lock.unlock() }
 
         return self.task
+    }
+}
+
+private actor SSHStructuredRouteRootOwnerCompletionGate {
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume(with value: Bool) {
+        guard let continuation = self.continuation else {
+            return
+        }
+
+        self.continuation = nil
+        continuation.resume(returning: value)
     }
 }
