@@ -7,6 +7,11 @@ extension SSHTransportProtocolClient {
     static let keepaliveRequestName = "keepalive@openssh.com"
     static let defaultNetworkTransitionProbeTimeoutNanoseconds: UInt64 = 5_000_000_000
 
+    // True on every task spawned as the keepalive timer loop. `withTransportRekeyInProgress`
+    // consults it so a rekey initiated from inside the keepalive's own send or reply pump
+    // does not cancel the very task that is performing the rekey.
+    @TaskLocal static var isRunningOnKeepaliveTimerTask = false
+
     // Ensures a single long-lived keepalive timer task is running. This is idempotent and cheap:
     // if a timer is already scheduled it returns immediately, so the hot per-packet activity path
     // (`noteProtectedTransportActivity`) no longer cancels and re-spawns a task per packet. The
@@ -30,7 +35,9 @@ extension SSHTransportProtocolClient {
         let generation = self.keepaliveTaskGeneration
         let client = self
         let task = Task { [weak client] in
-            await client?.runKeepaliveTimerLoop(expectedGeneration: generation)
+            await Self.$isRunningOnKeepaliveTimerTask.withValue(true) {
+                await client?.runKeepaliveTimerLoop(expectedGeneration: generation)
+            }
         }
         self.keepaliveTaskHandle = SSHCancellationHandle(cancelOperation: {
             task.cancel()

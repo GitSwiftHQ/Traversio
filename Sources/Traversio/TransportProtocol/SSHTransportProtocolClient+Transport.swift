@@ -1326,17 +1326,33 @@ extension SSHTransportProtocolClient {
         _ operation: () async throws -> Result
     ) async throws -> Result {
         self.cancelIdleRekeyTask()
-        self.cancelKeepaliveTask()
+        // A rekey can be initiated from inside the keepalive task itself: its reply pump
+        // consumes the peer's KEXINIT, or its own send reaches a rekey trigger. Cancelling
+        // that task here would abort the rekey it is about to perform — after the peer's
+        // KEXINIT was already consumed — leaving the key exchange half-done and the
+        // connection wedged. The keepalive cannot fire concurrently while its task is busy
+        // driving this rekey, so leaving it running is safe.
+        if !Self.isRunningOnKeepaliveTimerTask {
+            self.cancelKeepaliveTask()
+        }
         self.isTransportRekeyInProgress = true
 
         do {
             let result = try await operation()
             self.isTransportRekeyInProgress = false
+            // Re-arm the timers cancelled above. The NEWKEYS activity note runs while
+            // `isTransportRekeyInProgress` is still true, so its refresh is a no-op, and on
+            // an otherwise idle connection no later packet would ever re-arm them — silently
+            // disabling silent-peer detection (and periodic idle rekey) after the first rekey.
+            self.refreshIdleRekeySchedulingIfNeeded()
+            self.refreshKeepaliveSchedulingIfNeeded()
             try await self.flushDeferredConnectionMessagesAfterTransportRekey()
             self.resumeAllTransportRekeyWaitersReady()
             return result
         } catch {
             self.isTransportRekeyInProgress = false
+            self.refreshIdleRekeySchedulingIfNeeded()
+            self.refreshKeepaliveSchedulingIfNeeded()
             self.resumeAllTransportRekeyWaitersReady()
             self.deferredConnectionMessagesDuringTransportRekey.removeAll(keepingCapacity: true)
             throw error
