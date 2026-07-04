@@ -1918,6 +1918,7 @@ func transportProtocolClientToleratesLateMessageForEvictedCompletedChannel() asy
     #expect(healthyChannel.channel.localChannelID == churnCount)
     #expect(await fixture.client.managedSessionStates[churnCount] != nil)
 }
+
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 @Test
 func transportProtocolClientClosesLateConfirmationForAbandonedChannelOpen() async throws {
@@ -2032,6 +2033,161 @@ func transportProtocolClientClosesLateConfirmationForAbandonedChannelOpen() asyn
     #expect(
         sentConnectionMessages.contains(
             .channelClose(SSHChannelCloseMessage(recipientChannel: 9_000))
+        )
+    )
+}
+
+// A late reply belonging to an abandoned global request (reply timeout or cancellation) is
+// an expected arrival at a remote-forward accept loop: the abandoned-reply counter drops it
+// before any future waiter can match it. The accept loop must keep accepting, not die.
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientAcceptLoopSurvivesAbandonedGlobalRequestLateReply() async throws {
+    let serviceAcceptPayload = try SSHTransportMessageSerializer().serialize(
+        .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+    )
+    let authSuccessPayload = try SSHUserAuthenticationMessageSerializer().serialize(
+        .success(SSHUserAuthenticationSuccessMessage())
+    )
+    let setupPayloads = [serviceAcceptPayload, authSuccessPayload]
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks,
+        responseTimeoutNanoseconds: 100_000_000
+    )
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
+    )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+
+    // Establish the forward (bound port 47000) and park its accept loop on the receive turn.
+    var forwardReplyWriter = SSHWireWriter()
+    forwardReplyWriter.write(uint32: 47_000)
+    let forwardReplyPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: forwardReplyWriter.bytes))
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: forwardReplyPayload),
+            endOfStream: false
+        ),
+    ])
+    let activeForward = try await fixture.client.requestTCPIPForward(
+        addressToBind: "127.0.0.1",
+        portToBind: 0
+    )
+    let acceptTask = Task {
+        try await fixture.client.acceptForwardedTCPIPChannel(for: activeForward)
+    }
+    var acceptLoopParked = false
+    for _ in 0..<400 {
+        if await fixture.client.activeConnectionMessageWaiterCount == 1 {
+            acceptLoopParked = true
+            break
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(acceptLoopParked)
+
+    // A second global request times out and abandons its turn while its reply is in flight.
+    do {
+        _ = try await fixture.client.requestTCPIPForward(
+            addressToBind: "127.0.0.1",
+            portToBind: 0
+        )
+        Issue.record("Expected the second forward request to time out.")
+    } catch {
+        #expect(
+            error as? SSHTimeoutError
+                == .globalRequestReply(
+                    requestType: "tcpip-forward",
+                    durationNanoseconds: 100_000_000
+                )
+        )
+    }
+    #expect(await fixture.client.abandonedGlobalRequestReplyCount == 1)
+
+    // The abandoned request's LATE reply now reaches the parked accept loop. It must be
+    // queued for the abandoned-reply drop, not treated as a fatal unsolicited reply.
+    var staleReplyWriter = SSHWireWriter()
+    staleReplyWriter.write(uint32: 48_000)
+    let staleReplyPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: staleReplyWriter.bytes))
+    )
+    let forwardedOpenPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelOpen(
+            SSHChannelOpenMessage(
+                channelType: "forwarded-tcpip",
+                senderChannel: 55,
+                initialWindowSize: 1_048_576,
+                maximumPacketSize: 32_768,
+                channelTypeData: {
+                    var writer = SSHWireWriter()
+                    writer.write(utf8: "127.0.0.1")
+                    writer.write(uint32: 47_000)
+                    writer.write(utf8: "198.51.100.7")
+                    writer.write(uint32: 62001)
+                    return writer.bytes
+                }()
+            )
+        )
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: staleReplyPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: forwardedOpenPayload),
+            endOfStream: false
+        ),
+    ])
+
+    // The accept loop survives the stale reply and accepts the forwarded connection.
+    let acceptedChannel = try await acceptTask.value
+    #expect(acceptedChannel.handle.channel.remoteChannelID == 55)
+    #expect(
+        acceptedChannel.openRequest
+            == SSHForwardedTCPIPChannelOpenRequest(
+                listeningAddress: "127.0.0.1",
+                listeningPort: 47_000,
+                originatorAddress: "198.51.100.7",
+                originatorPort: 62001
+            )
+    )
+
+    // The queued stale reply is dropped by the abandoned-reply counter, so a third request
+    // still matches its OWN reply (49000), not the abandoned one (48000).
+    var liveReplyWriter = SSHWireWriter()
+    liveReplyWriter.write(uint32: 49_000)
+    let liveReplyPayload = try SSHConnectionMessageSerializer().serialize(
+        .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: liveReplyWriter.bytes))
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: liveReplyPayload),
+            endOfStream: false
+        ),
+    ])
+    let thirdForward = try await fixture.client.requestTCPIPForward(
+        addressToBind: "127.0.0.1",
+        portToBind: 0
+    )
+    #expect(
+        thirdForward == SSHTCPIPForwardingRequest(
+            addressToBind: "127.0.0.1",
+            portToBind: 49_000
         )
     )
 }

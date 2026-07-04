@@ -246,9 +246,14 @@ extension SSHTransportProtocolClient {
                     return SSHInboundWaitOutcome.continueWaiting
                 case .requestSuccess, .requestFailure:
                     self.appendPendingGlobalRequestReply(message)
+                    // A reply is an expected arrival while a cancel request for this forward is
+                    // in flight, while a live waiter exists, or while an earlier waiter abandoned
+                    // its turn (reply timeout or cancellation) and its late reply is still owed:
+                    // the abandoned-reply counter drops it before any future waiter can match.
                     guard
                         self.remoteTCPIPForwardCancellationRequestsInFlight.contains(activeForward) ||
-                        self.activeGlobalRequestReplyWaiterCount > 0
+                        self.activeGlobalRequestReplyWaiterCount > 0 ||
+                        self.abandonedGlobalRequestReplyCount > 0
                     else {
                         throw CancellationError()
                     }
@@ -337,9 +342,12 @@ extension SSHTransportProtocolClient {
                     return SSHInboundWaitOutcome.continueWaiting
                 case .requestSuccess, .requestFailure:
                     self.appendPendingGlobalRequestReply(message)
+                    // See acceptForwardedTCPIPChannel: an abandoned earlier waiter's late reply
+                    // is expected here and is dropped by the abandoned-reply counter, not fatal.
                     guard
                         self.remoteStreamLocalForwardCancellationRequestsInFlight.contains(activeForward) ||
-                        self.activeGlobalRequestReplyWaiterCount > 0
+                        self.activeGlobalRequestReplyWaiterCount > 0 ||
+                        self.abandonedGlobalRequestReplyCount > 0
                     else {
                         throw CancellationError()
                     }
