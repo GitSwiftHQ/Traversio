@@ -1018,6 +1018,23 @@ extension SSHTransportProtocolClient {
                 self.removeManagedSessionState(forLocalChannelID: localChannelID)
                 return sessionState.transcript
             }
+            // Transcript collection consumes every received byte into the transcript, so
+            // replenish the window for whatever this channel has buffered BEFORE waiting for
+            // the next message. Bytes routed here by another receive-turn holder can already
+            // hold a full initial window; a peer blocked on that zero window can only make
+            // progress after this adjust, so waiting for its next message first would deadlock.
+            let bufferedByteCount = Int(sessionState.receiveWindowState.bufferedByteCount)
+            if bufferedByteCount > 0 {
+                try await self.replenishConsumedReceiveWindow(
+                    byteCount: bufferedByteCount,
+                    sessionState: &sessionState,
+                    forLocalChannelID: localChannelID
+                )
+                // The adjust send can suspend; the channel may have completed through another
+                // receive-turn holder while it was in flight. Re-enter the loop so completion
+                // is re-checked against fresh state before blocking on the next message.
+                continue
+            }
             let observationGeneration = sessionState.outputState.observationGeneration
             self.managedSessionStates[localChannelID] = sessionState
 
@@ -1028,18 +1045,6 @@ extension SSHTransportProtocolClient {
                 )
                 self.removeManagedSessionState(forLocalChannelID: localChannelID)
                 return completedState.transcript
-            }
-            // Transcript collection consumes every received byte into the transcript, so
-            // replenish the window for whatever this channel buffered on the turn just taken.
-            // A transcript larger than one initial window would otherwise stall the peer once
-            // its window reached zero.
-            if var refreshedState = self.managedSessionStates[localChannelID] {
-                try await self.replenishConsumedReceiveWindow(
-                    byteCount: Int(refreshedState.receiveWindowState.bufferedByteCount),
-                    sessionState: &refreshedState,
-                    forLocalChannelID: localChannelID,
-                    respectCancellation: false
-                )
             }
             if self.managedSessionObservationGeneration(
                 forLocalChannelID: localChannelID
@@ -1065,12 +1070,14 @@ extension SSHTransportProtocolClient {
     // Replenishes the peer's receive window after the application has consumed `byteCount`
     // buffered bytes from this channel, emitting WINDOW_ADJUST once the batched consumption
     // crosses the replenish threshold. The updated window state is persisted before the send
-    // so actor reentrancy during the await cannot drop the grant.
+    // so actor reentrancy during the await cannot drop the grant. The send itself never
+    // respects caller cancellation: by the time it runs the drain has already been persisted,
+    // so an interrupted send would silently discard the drained bytes from the caller's view
+    // and leave the local window claiming credit the peer never received.
     private func replenishConsumedReceiveWindow(
         byteCount: Int,
         sessionState: inout SSHManagedSessionState,
-        forLocalChannelID localChannelID: UInt32,
-        respectCancellation: Bool
+        forLocalChannelID localChannelID: UInt32
     ) async throws {
         let windowAdjust = byteCount > 0
             ? try sessionState.receiveWindowState.replenishForConsumedBytes(
@@ -1087,7 +1094,7 @@ extension SSHTransportProtocolClient {
         }
         try await self.sendConnectionMessage(
             .channelWindowAdjust(windowAdjust),
-            respectCancellation: respectCancellation,
+            respectCancellation: false,
             respectTransportSendCancellation: false
         )
     }
@@ -1112,8 +1119,7 @@ extension SSHTransportProtocolClient {
                 try await self.replenishConsumedReceiveWindow(
                     byteCount: Int(discardedStandardErrorByteCount),
                     sessionState: &sessionState,
-                    forLocalChannelID: localChannelID,
-                    respectCancellation: respectCancellation
+                    forLocalChannelID: localChannelID
                 )
                 continue
             }
@@ -1127,8 +1133,7 @@ extension SSHTransportProtocolClient {
                 try await self.replenishConsumedReceiveWindow(
                     byteCount: unreadChunk.count,
                     sessionState: &sessionState,
-                    forLocalChannelID: localChannelID,
-                    respectCancellation: respectCancellation
+                    forLocalChannelID: localChannelID
                 )
                 return unreadChunk
             }
@@ -1179,8 +1184,7 @@ extension SSHTransportProtocolClient {
                 try await self.replenishConsumedReceiveWindow(
                     byteCount: consumedByteCount,
                     sessionState: &sessionState,
-                    forLocalChannelID: localChannelID,
-                    respectCancellation: respectCancellation
+                    forLocalChannelID: localChannelID
                 )
                 return nextEvent
             }

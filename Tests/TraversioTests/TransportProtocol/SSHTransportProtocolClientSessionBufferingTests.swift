@@ -258,6 +258,223 @@ func transportProtocolClientDoesNotReplenishBufferedChannelUntilItsConsumerReads
     )
 }
 
+// A transcript collector activated on a channel whose full initial window is already
+// buffered (routed there by another channel's reader) must credit those bytes BEFORE
+// waiting for the next inbound message: the peer is window-blocked and the connection is
+// otherwise quiescent, so no further message can arrive until the WINDOW_ADJUST goes out.
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientReplenishesPreBufferedTranscriptWindowBeforeWaitingForMessages() async throws {
+    let channelAStdout = Array(repeating: UInt8(0x41), count: 40)
+    let channelBStdout = Array(repeating: UInt8(0x42), count: 64)
+    let setupPayloads = try makeTwoChannelSetupPayloads(
+        channelBStdout: channelBStdout,
+        channelAStdout: channelAStdout
+    )
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+
+    _ = try await fixture.client.authenticatePassword(username: "root", password: "s3cr3t")
+    let sessionA = try await fixture.client.openExecSession(
+        command: "channel-a",
+        localInitialWindowSize: 64,
+        localMaximumPacketSize: 64
+    )
+    let sessionB = try await fixture.client.openExecSession(
+        command: "channel-b",
+        localInitialWindowSize: 64,
+        localMaximumPacketSize: 64
+    )
+
+    // Reading channel A routes channel B's full 64-byte window into B's buffer.
+    #expect(try await sessionA.readStandardOutputChunk() == channelAStdout)
+    let bufferedBState = try #require(await fixture.client.managedSessionStates[1])
+    #expect(bufferedBState.receiveWindowState.remainingWindowSize == 0)
+
+    let collectTask = Task {
+        try await sessionB.collectOutputUntilClose()
+    }
+
+    // No further inbound message is queued: the credit must appear on the wire from the
+    // transcript loop's own first turn, before it blocks on the next message.
+    var sawWindowAdjust = false
+    for _ in 0..<400 {
+        let sent = await fixture.transport.sentPayloads()
+        if try windowAdjustmentBytesToAdd(
+            forRecipientChannel: 91,
+            inSentPayloads: sent,
+            activation: fixture.activation
+        ) == [64] {
+            sawWindowAdjust = true
+            break
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(sawWindowAdjust)
+
+    // Only now let the channel finish, and confirm the transcript kept every buffered byte.
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
+    )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+    let eofPayload = try SSHConnectionMessageSerializer().serialize(
+        .channelEOF(SSHChannelEOFMessage(recipientChannel: 1))
+    )
+    let closePayload = try SSHConnectionMessageSerializer().serialize(
+        .channelClose(SSHChannelCloseMessage(recipientChannel: 1))
+    )
+    await fixture.transport.appendReceiveChunks([
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: eofPayload),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(payload: closePayload),
+            endOfStream: false
+        ),
+    ])
+
+    let transcript = try await collectTask.value
+    #expect(transcript.standardOutput == channelBStdout)
+    #expect(transcript.didReceiveEOF)
+}
+
+// Cancelling a chunk read after it has drained its buffered chunk — while the window-credit
+// send is still queued behind another in-flight packet — must neither discard the drained
+// chunk nor lose the WINDOW_ADJUST: the drain is already persisted, so an interrupted send
+// would silently desynchronize the local and peer window views.
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func transportProtocolClientCancelledChunkReadStillDeliversChunkAndWindowAdjust() async throws {
+    let channelAStdout = Array(repeating: UInt8(0x41), count: 40)
+    let channelBStdout = Array(repeating: UInt8(0x42), count: 64)
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: try makeTwoChannelSetupPayloads(
+            channelBStdout: channelBStdout,
+            channelAStdout: channelAStdout
+        ),
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+
+    _ = try await fixture.client.authenticatePassword(username: "root", password: "s3cr3t")
+    let sessionA = try await fixture.client.openExecSession(
+        command: "channel-a",
+        localInitialWindowSize: 64,
+        localMaximumPacketSize: 64
+    )
+    let sessionB = try await fixture.client.openExecSession(
+        command: "channel-b",
+        localInitialWindowSize: 64,
+        localMaximumPacketSize: 64
+    )
+    #expect(try await sessionA.readStandardOutputChunk() == channelAStdout)
+
+    // Occupy the single outbound packet-send turn with a slow unrelated packet so the
+    // chunk read's window-credit send has to queue behind it.
+    await fixture.transport.setSendDelayNanoseconds(800_000_000)
+    let turnHolder = Task {
+        try? await fixture.client.sendConnectionMessage(
+            .channelData(SSHChannelDataMessage(recipientChannel: 90, data: [0x2e]))
+        )
+    }
+    var turnHolderSending = false
+    for _ in 0..<400 {
+        if await fixture.transport.activeSendCountObserved() >= 1 {
+            turnHolderSending = true
+            break
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(turnHolderSending)
+
+    let readTask = Task {
+        try await sessionB.readStandardOutputChunk()
+    }
+    // Wait for the drain to be persisted (the buffered chunk left the session state); the
+    // read is now at or past its window-credit send, queued behind the turn holder.
+    var drainPersisted = false
+    for _ in 0..<400 {
+        if let state = await fixture.client.managedSessionStates[1],
+           state.outputState.unreadStandardOutput.isEmpty {
+            drainPersisted = true
+            break
+        }
+        try? await Task.sleep(nanoseconds: 5_000_000)
+    }
+    #expect(drainPersisted)
+
+    readTask.cancel()
+
+    // The already-drained chunk must still be delivered and its credit must reach the wire.
+    #expect(try await readTask.value == channelBStdout)
+    let sent = await fixture.transport.sentPayloads()
+    #expect(
+        try windowAdjustmentBytesToAdd(
+            forRecipientChannel: 91,
+            inSentPayloads: sent,
+            activation: fixture.activation
+        ) == [64]
+    )
+    _ = await turnHolder.value
+}
+
+// Shared two-channel arrangement: channel B's full 64-byte initial window arrives before
+// channel A's data, so channel A's reader routes B's bytes into B's buffer.
+private func makeTwoChannelSetupPayloads(
+    channelBStdout: [UInt8],
+    channelAStdout: [UInt8]
+) throws -> [[UInt8]] {
+    [
+        try SSHTransportMessageSerializer().serialize(
+            .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+        ),
+        try SSHUserAuthenticationMessageSerializer().serialize(
+            .success(SSHUserAuthenticationSuccessMessage())
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelOpenConfirmation(
+                SSHChannelOpenConfirmationMessage(
+                    recipientChannel: 0,
+                    senderChannel: 90,
+                    initialWindowSize: 1_048_576,
+                    maximumPacketSize: 32_768,
+                    channelTypeData: []
+                )
+            )
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelSuccess(SSHChannelSuccessMessage(recipientChannel: 0))
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelOpenConfirmation(
+                SSHChannelOpenConfirmationMessage(
+                    recipientChannel: 1,
+                    senderChannel: 91,
+                    initialWindowSize: 1_048_576,
+                    maximumPacketSize: 32_768,
+                    channelTypeData: []
+                )
+            )
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelSuccess(SSHChannelSuccessMessage(recipientChannel: 1))
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelData(SSHChannelDataMessage(recipientChannel: 1, data: channelBStdout))
+        ),
+        try SSHConnectionMessageSerializer().serialize(
+            .channelData(SSHChannelDataMessage(recipientChannel: 0, data: channelAStdout))
+        ),
+    ]
+}
+
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 private func windowAdjustmentBytesToAdd(
     forRecipientChannel recipientChannel: UInt32,

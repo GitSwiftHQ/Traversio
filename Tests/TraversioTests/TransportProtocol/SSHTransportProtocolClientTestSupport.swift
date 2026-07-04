@@ -28,7 +28,7 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
     private var queuedSendFailureCodes: [POSIXErrorCode] = []
     private let emptyReceiveBehavior: EmptyReceiveBehavior
     private let receiveDelayNanoseconds: UInt64
-    private let sendDelayNanoseconds: UInt64
+    private var sendDelayNanoseconds: UInt64
     private var activeReceiveCount = 0
     private var maximumConcurrentReceiveCount = 0
     private var receiveRespectCancellationFlags: [Bool] = []
@@ -149,6 +149,11 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
 
     func appendReceiveChunks(_ chunks: [SSHByteStreamChunk]) {
         self.receiveChunks.append(contentsOf: chunks)
+    }
+
+    // Lets a test slow down sends only after the handshake completed at full speed.
+    func setSendDelayNanoseconds(_ delayNanoseconds: UInt64) {
+        self.sendDelayNanoseconds = delayNanoseconds
     }
 
     func enqueueSendFailure(_ code: POSIXErrorCode) {
@@ -825,6 +830,19 @@ actor ServiceRequestRekeyMockSSHByteStreamTransport: SSHByteStreamTransport {
     private func handleEncryptedClientConnectionMessage(
         _ message: SSHConnectionMessage
     ) throws {
+        if case let .globalRequest(request) = message {
+            // Answer keepalive-style want-reply global requests so keepalive-driven tests can
+            // run their full send/reply cycle against this transport.
+            guard request.wantReply else {
+                return
+            }
+            let payload = try SSHConnectionMessageSerializer().serialize(
+                .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+            )
+            try self.queueEncryptedPayloads([payload])
+            return
+        }
+
         guard let channelOpenConfirmationSenderChannel else {
             return
         }
