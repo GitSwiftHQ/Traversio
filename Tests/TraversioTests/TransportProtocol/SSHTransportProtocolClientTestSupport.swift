@@ -14,6 +14,7 @@ let backgroundKeepaliveTestInterval = 0.05
 // protocol interval being tested.
 let backgroundKeepaliveObservationAttempts = 1_000
 let backgroundKeepaliveObservationSleepNanoseconds: UInt64 = 5_000_000
+private let mockTransportEmptyReceivePollNanoseconds: UInt64 = 1_000_000
 
 enum EmptyReceiveBehavior: Sendable {
     case endOfStream
@@ -125,9 +126,10 @@ actor ProtocolClientMockSSHByteStreamTransport: SSHCancellationControllingByteSt
             case .waitForAppendedChunks:
                 while self.receiveChunks.isEmpty {
                     if respectCancellation {
-                        try Task.checkCancellation()
+                        try await Task.sleep(nanoseconds: mockTransportEmptyReceivePollNanoseconds)
+                    } else {
+                        try? await Task.sleep(nanoseconds: mockTransportEmptyReceivePollNanoseconds)
                     }
-                    await Task.yield()
                 }
             }
         }
