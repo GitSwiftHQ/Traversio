@@ -15,7 +15,7 @@ package final class NetworkTCPListener: @unchecked Sendable, SSHTCPListener {
 
     package init(localHost: String, localPort: UInt16) throws {
         let localEndpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(localHost),
+            host: SSHTCPEndpointParser.listenerBindHost(localHost),
             port: try SSHTCPEndpointParser.port(localPort)
         )
         let parameters = NWParametersBuilder<TCP>.parameters {

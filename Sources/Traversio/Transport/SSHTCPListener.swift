@@ -67,7 +67,7 @@ package enum SSHTCPListenerFactory {
     ) throws -> NWParameters {
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
-            host: NWEndpoint.Host(localHost),
+            host: SSHTCPEndpointParser.listenerBindHost(localHost),
             port: try SSHTCPEndpointParser.port(localPort)
         )
         parameters.allowLocalEndpointReuse = true
@@ -131,6 +131,25 @@ package enum SSHTCPEndpointParser {
                 port: port.rawValue
             )
         )
+    }
+
+    /// Builds the host component of a local listener bind endpoint.
+    ///
+    /// Network.framework treats a name-based required local endpoint as
+    /// unbindable: `NWListener` and `NetworkListener<TCP>` silently ignore the
+    /// requested fixed port and bind an assigned port instead. `localhost` is
+    /// loopback by definition (RFC 6761, section 6.3), so it is normalized to
+    /// the numeric IPv4 loopback address at the bind boundary. Callers keep
+    /// reporting the requested host string; only the bind endpoint changes.
+    ///
+    /// This applies to listener bind endpoints only. Remote targets and
+    /// direct-tcpip targets must keep their original host names.
+    package static func listenerBindHost(_ localHost: String) -> NWEndpoint.Host {
+        if localHost.caseInsensitiveCompare("localhost") == .orderedSame {
+            return .ipv4(.loopback)
+        }
+
+        return NWEndpoint.Host(localHost)
     }
 
     package static func port(_ rawPort: UInt16) throws -> NWEndpoint.Port {
