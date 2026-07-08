@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## 1.0.7 - 2026-07-08
+
+Reliability and hardening:
+
+- A conservative background keepalive is now enabled by default. Silent or
+  half-dead peers are detected out of band, and the keepalive and idle-rekey
+  timers now re-arm correctly after transport rekey, including rekey driven by
+  the keepalive path itself.
+- `close()` and remote-forward graceful drain paths are bounded so dead peers do
+  not keep teardown open-ended. Forwarding bridges now clean up delayed accepts,
+  abandoned replies, and late forwarded-channel messages more deterministically.
+- Per-channel receive buffering now applies backpressure by consumption instead
+  of only by queued output, and window-credit sends are protected from caller
+  cancellation once data has been consumed.
+- Wire and SFTP parsers bound attacker-controlled allocations against remaining
+  payload bytes, SFTP concurrent-read failures cancel outstanding requests, and
+  request-id wrap no longer traps.
+- Chacha20-Poly1305 transport epochs now force rekey before the packet sequence
+  number nonce could wrap.
+- Local and dynamic forwarding now honor fixed requested ports when callers bind
+  `localHost: "localhost"` by normalizing the listener bind endpoint to numeric
+  loopback while preserving the public host string.
+- Proxy transports now forward network path and transport observations through
+  the same public connection state path as direct transports.
+
 ## 1.0.6 - 2026-06-11
 
 Network lifecycle hardening:
