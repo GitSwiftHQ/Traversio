@@ -8,6 +8,53 @@ import Testing
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 @Test
+func transportProtocolClientBatchesReceiveWindowCreditAtOpenSSHPacketCadence() async {
+    let transport = ProtocolClientMockSSHByteStreamTransport(receiveChunks: [])
+    let client = SSHTransportProtocolClient(transport: transport)
+
+    #expect(
+        await client.receiveWindowReplenishThreshold(for: 1_048_576) == 98_305
+    )
+    #expect(
+        await client.receiveWindowReplenishThreshold(for: 2 * 1_024 * 1_024) == 98_305
+    )
+    #expect(
+        await client.receiveWindowReplenishThreshold(
+            for: 1_048_576,
+            maximumPacketSize: 64
+        ) == 193
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func sessionReceiveWindowReturnsConsumedCreditAfterPacketCadenceIsCrossed() throws {
+    var state = SSHSessionReceiveWindowState(
+        initialWindowSize: 2 * 1_024 * 1_024,
+        replenishThreshold: 98_305
+    )
+    try state.recordReceivedBytes(
+        byteCount: 200 * 1_024,
+        localChannelID: 7,
+        remoteChannelID: 70
+    )
+
+    let adjustment = try state.replenishForConsumedBytes(
+        byteCount: 1,
+        localChannelID: 7,
+        remoteChannelID: 70
+    )
+
+    #expect(
+        adjustment == SSHChannelWindowAdjustMessage(
+            recipientChannel: 70,
+            bytesToAdd: 1
+        )
+    )
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
 func transportProtocolClientUsesChunkBufferOnlyAfterStandardOutputChunkReaderStarts() async throws {
     let stdout = Array("streamed stdout".utf8)
     let fixture = try await makeActivatedExecFixture(
@@ -137,7 +184,7 @@ func transportProtocolClientDoesNotReplenishBufferedChannelUntilItsConsumerReads
     // channel A's reader pumps the shared receive turn (which routes B's data into B's
     // buffer). The fix requires that routing B's data only decrements B's receive window
     // and buffers the bytes: B's window must NOT be replenished until B's own consumer
-    // drains the buffer. A small initial window (64) with a 32-byte replenish threshold
+    // drains the buffer. A small initial window (64) with a 33-byte replenish threshold
     // lets test-sized payloads exercise the batching that the production 1 MiB window uses.
     let channelAStdout = Array(repeating: UInt8(0x41), count: 40)
     let channelBFirstStdout = Array(repeating: UInt8(0x42), count: 40)
@@ -227,7 +274,7 @@ func transportProtocolClientDoesNotReplenishBufferedChannelUntilItsConsumerReads
     #expect(bufferedBState.receiveWindowState.remainingWindowSize == 0)
     #expect(bufferedBState.outputState.unreadStandardOutput == channelBBufferedStdout)
 
-    // Channel A consumed its 40-byte chunk, which crossed the 32-byte threshold and released
+    // Channel A consumed its 40-byte chunk, which crossed the 33-byte threshold and released
     // window back to the peer, so A's window returned to its initial size.
     let drainedAState = try #require(await fixture.client.managedSessionStates[0])
     #expect(drainedAState.receiveWindowState.remainingWindowSize == 64)

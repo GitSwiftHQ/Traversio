@@ -76,7 +76,7 @@ struct SSHSessionReceiveWindowState: Sendable {
     let initialWindowSize: UInt32
     private(set) var remainingWindowSize: UInt32
     // Bytes the application has consumed but not yet handed back to the peer as window.
-    // Batched so we emit one WINDOW_ADJUST per threshold rather than one per read.
+    // Batched until the advertised window has depleted far enough to justify an adjust.
     private var pendingWindowAdjustment: UInt32 = 0
     private let replenishThreshold: UInt32
     // Upper bound on bytes that may sit received-but-unconsumed for this channel. Because
@@ -134,9 +134,12 @@ struct SSHSessionReceiveWindowState: Sendable {
     // Called when the application consumes buffered bytes (a chunk/event/transcript drain,
     // SFTP read, or forwarding-bridge read) or when the active buffering mode discards
     // received bytes that no reader will drain. Replenishes the peer's window by the
-    // consumed amount, batched at `replenishThreshold`. While the unread buffer is at or
-    // above the high-water mark the grant is withheld so the peer's window drains to zero
-    // and it stops sending; no buffered data is ever dropped.
+    // consumed amount once total window depletion reaches `replenishThreshold`. Basing the
+    // cadence on depleted credit, rather than only the pending consumed bytes, mirrors
+    // OpenSSH: after several packets have arrived, even a small application drain promptly
+    // returns that credit. While the unread buffer is at or above the high-water mark the
+    // grant is withheld so the peer's window drains to zero and it stops sending; no
+    // buffered data is ever dropped.
     mutating func replenishForConsumedBytes(
         byteCount: Int,
         localChannelID: UInt32,
@@ -158,8 +161,11 @@ struct SSHSessionReceiveWindowState: Sendable {
         }
         self.pendingWindowAdjustment = accumulated
 
+        let depletedWindowByteCount = self.initialWindowSize >= self.remainingWindowSize
+            ? self.initialWindowSize - self.remainingWindowSize
+            : 0
         guard self.bufferedByteCount < self.bufferHighWaterMark,
-              self.pendingWindowAdjustment >= self.replenishThreshold else {
+              depletedWindowByteCount >= self.replenishThreshold else {
             return nil
         }
 

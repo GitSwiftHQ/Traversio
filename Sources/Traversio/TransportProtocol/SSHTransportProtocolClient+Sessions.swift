@@ -78,7 +78,8 @@ extension SSHTransportProtocolClient {
                 initialRemoteWindowAdjustment: preSessionRemoteWindowAdjustment,
                 outputBufferingMode: outputBufferingMode,
                 receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                    for: localInitialWindowSize
+                    for: localInitialWindowSize,
+                    maximumPacketSize: localMaximumPacketSize
                 )
             )
         } catch {
@@ -126,7 +127,8 @@ extension SSHTransportProtocolClient {
                 initialRemoteWindowAdjustment: totalRemoteWindowAdjustment,
                 outputBufferingMode: outputBufferingMode,
                 receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                    for: localInitialWindowSize
+                    for: localInitialWindowSize,
+                    maximumPacketSize: localMaximumPacketSize
                 )
             )
         } catch {
@@ -187,7 +189,8 @@ extension SSHTransportProtocolClient {
                 initialRemoteWindowAdjustment: preSessionRemoteWindowAdjustment,
                 outputBufferingMode: outputBufferingMode,
                 receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                    for: localInitialWindowSize
+                    for: localInitialWindowSize,
+                    maximumPacketSize: localMaximumPacketSize
                 )
             )
         } catch {
@@ -1231,8 +1234,31 @@ extension SSHTransportProtocolClient {
         return channelID
     }
 
-    func receiveWindowReplenishThreshold(for localInitialWindowSize: UInt32) -> UInt32 {
-        max(1, localInitialWindowSize / 2)
+    func receiveWindowReplenishThreshold(
+        for localInitialWindowSize: UInt32,
+        maximumPacketSize: UInt32 = 32_768
+    ) -> UInt32 {
+        guard localInitialWindowSize > 0 else {
+            return 1
+        }
+
+        // OpenSSH returns consumed credit once more than three maximum-size packets have
+        // depleted the channel, or once less than half the original window remains. Encode
+        // those strict comparisons as the first byte count that satisfies either branch.
+        let (threePackets, packetMultiplicationOverflow) = maximumPacketSize
+            .multipliedReportingOverflow(by: 3)
+        let packetCadenceThreshold: UInt32
+        if packetMultiplicationOverflow || threePackets == UInt32.max {
+            packetCadenceThreshold = UInt32.max
+        } else {
+            packetCadenceThreshold = threePackets + 1
+        }
+
+        let halfWindowThreshold = min(
+            localInitialWindowSize,
+            localInitialWindowSize - (localInitialWindowSize / 2) + 1
+        )
+        return max(1, min(packetCadenceThreshold, halfWindowThreshold))
     }
 
     private func makeChannelWindowSnapshot(

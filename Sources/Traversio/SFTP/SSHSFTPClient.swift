@@ -740,7 +740,9 @@ package actor SSHSFTPClient {
 
 extension SSHTransportProtocolClient {
     func openSFTPSubsystemSession(
-        localInitialWindowSize: UInt32 = 1_048_576,
+        // Match OpenSSH's 64 x 32 KiB session window. Packet-cadence credit
+        // replenishment keeps the advertised window close to full.
+        localInitialWindowSize: UInt32 = 2 * 1_024 * 1_024,
         localMaximumPacketSize: UInt32 = 32_768
     ) async throws -> SSHSessionHandle {
         try await self.openSubsystemSession(
@@ -753,7 +755,7 @@ extension SSHTransportProtocolClient {
 
     package func openSFTPClient(
         clientVersion: UInt32 = 3,
-        localInitialWindowSize: UInt32 = 1_048_576,
+        localInitialWindowSize: UInt32 = 2 * 1_024 * 1_024,
         localMaximumPacketSize: UInt32 = 32_768
     ) async throws -> SSHSFTPClient {
         let session = try await self.openSFTPSubsystemSession(

@@ -43,7 +43,8 @@ extension SSHTransportProtocolClient {
                 channel: channel,
                 outputBufferingMode: outputBufferingMode,
                 receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                    for: localInitialWindowSize
+                    for: localInitialWindowSize,
+                    maximumPacketSize: localMaximumPacketSize
                 )
             )
             return SSHTCPIPChannelHandle(sessionHandle: sessionHandle)
@@ -92,7 +93,8 @@ extension SSHTransportProtocolClient {
                 channel: channel,
                 outputBufferingMode: outputBufferingMode,
                 receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                    for: localInitialWindowSize
+                    for: localInitialWindowSize,
+                    maximumPacketSize: localMaximumPacketSize
                 )
             )
             return SSHTCPIPChannelHandle(sessionHandle: sessionHandle)
@@ -810,7 +812,8 @@ extension SSHTransportProtocolClient {
                 sessionHandle: try await self.registerManagedSession(
                     channel: channel,
                     receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                        for: localInitialWindowSize
+                        for: localInitialWindowSize,
+                        maximumPacketSize: localMaximumPacketSize
                     )
                 )
             )
@@ -862,7 +865,8 @@ extension SSHTransportProtocolClient {
                 sessionHandle: try await self.registerManagedSession(
                     channel: channel,
                     receiveWindowReplenishThreshold: self.receiveWindowReplenishThreshold(
-                        for: localInitialWindowSize
+                        for: localInitialWindowSize,
+                        maximumPacketSize: localMaximumPacketSize
                     )
                 )
             )

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+Performance:
+
+- SFTP subsystem sessions now advertise a 2 MiB receive window instead of
+  1 MiB, matching OpenSSH's session-channel default. This keeps bounded
+  multi-request downloads moving while a high-latency peer waits for SSH
+  channel credit, without changing terminal, exec, or forwarding windows.
+- Receive windows now return application-consumed credit after slightly more
+  than three maximum-size channel packets have depleted the advertised window,
+  instead of waiting for half the window. Slow consumers retain the same
+  consumption-driven bounded backpressure.
+
 ## 1.0.7 - 2026-07-08
 
 Reliability and hardening:

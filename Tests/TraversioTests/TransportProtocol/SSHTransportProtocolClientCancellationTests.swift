@@ -385,7 +385,7 @@ func transportProtocolClientRoutesWindowAdjustWhileIgnoringCancelledSessionRead(
     )
     let session = try await fixture.client.openExecSession(
         command: "cat",
-        localInitialWindowSize: 8,
+        localInitialWindowSize: 6,
         localMaximumPacketSize: 32_768
     )
     let baselineSentPayloadCount = await fixture.transport.sentPayloads().count

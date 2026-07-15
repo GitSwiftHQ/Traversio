@@ -100,7 +100,9 @@ func transportProtocolClientOpensSFTPSubsystemSessionAndUsesManagedWriteFlowCont
                 SSHChannelOpenMessage(
                     channelType: "session",
                     senderChannel: 0,
-                    initialWindowSize: 1_048_576,
+                    // Match OpenSSH's 64 x 32 KiB session window while
+                    // packet-cadence adjustments keep the credit close to full.
+                    initialWindowSize: 2 * 1_024 * 1_024,
                     maximumPacketSize: 32_768,
                     channelTypeData: []
                 )
@@ -292,7 +294,7 @@ func transportProtocolClientOpensSFTPClientAndCompletesVersionExchange() async t
                 SSHChannelOpenMessage(
                     channelType: "session",
                     senderChannel: 0,
-                    initialWindowSize: 1_048_576,
+                    initialWindowSize: 2 * 1_024 * 1_024,
                     maximumPacketSize: 32_768,
                     channelTypeData: []
                 )
