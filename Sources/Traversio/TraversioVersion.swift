@@ -4,7 +4,7 @@
 // See LICENSE for details.
 
 package enum TraversioRelease {
-    package static let version = "1.0.7"
+    package static let version = "1.0.8"
     package static let sshSoftwareVersion = "Traversio_\(version)"
     package static let sshIdentificationRawValue = "SSH-2.0-\(sshSoftwareVersion)"
 }

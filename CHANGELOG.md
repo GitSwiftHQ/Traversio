@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.8 - 2026-07-15
+
 Performance:
 
 - SFTP subsystem sessions now advertise a 2 MiB receive window instead of
