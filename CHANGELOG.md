@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+Reliability:
+
+- Remote port forwarding now closes a forwarded channel promptly when the local
+  target refuses the connection on Apple platform releases before 26, where
+  the local connection uses the legacy `NWConnection` backend. That connection
+  previously stayed in `.waiting(ECONNREFUSED)` until the forwarding scope
+  ended. It now fails with the refusal error, as it already did on release 26
+  and later. Other waiting reasons and ordinary SSH connections keep their
+  existing behavior.
+
 ## 1.0.8 - 2026-07-15
 
 Performance:

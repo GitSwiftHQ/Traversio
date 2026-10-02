@@ -1290,6 +1290,148 @@ func sshRemotePortForwardingServiceBoundedDrainCancelsLingeringBridgeWhenBodyRet
     }
 }
 
+@Test
+func sshRemotePortForwardingServiceClosesForwardedChannelWhenLegacyLocalTargetRefusesConnection() async throws {
+    let setupPayloads = [
+        try SSHTransportMessageSerializer().serialize(
+            .serviceAccept(SSHServiceAcceptMessage(serviceName: "ssh-userauth"))
+        ),
+        try SSHUserAuthenticationMessageSerializer().serialize(
+            .success(SSHUserAuthenticationSuccessMessage())
+        ),
+        try remoteForwardRequestSuccessPayload(allocatedPort: 47_000),
+        try forwardedTCPIPOpenPayload(
+            senderChannel: 55,
+            listeningPort: 47_000,
+            originatorPort: 62_021
+        ),
+    ]
+    let fixture = try await makeActivatedTransportFixture(
+        serverPayloadsAfterNewKeys: setupPayloads,
+        emptyReceiveBehavior: .waitForAppendedChunks
+    )
+    var serverSerializer = try SSHOutboundEncryptedPacketSerializer(
+        negotiatedAlgorithms: fixture.activation.negotiation.algorithms,
+        keyMaterial: fixture.activation.transportKeyMaterial,
+        direction: .serverToClient,
+        initialSequenceNumber: 1
+    )
+    for payload in setupPayloads {
+        _ = try serverSerializer.serialize(payload: payload)
+    }
+    // The server answers the client's CHANNEL_CLOSE, then the forward cancellation.
+    let serverReplyChunks = [
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(
+                payload: SSHConnectionMessageSerializer().serialize(
+                    .channelClose(SSHChannelCloseMessage(recipientChannel: 0))
+                )
+            ),
+            endOfStream: false
+        ),
+        SSHByteStreamChunk(
+            bytes: try serverSerializer.serialize(
+                payload: SSHConnectionMessageSerializer().serialize(
+                    .requestSuccess(SSHGlobalRequestSuccessMessage(responseData: []))
+                )
+            ),
+            endOfStream: false
+        ),
+    ]
+
+    _ = try await fixture.client.authenticatePassword(
+        username: "root",
+        password: "s3cr3t"
+    )
+
+    try await withRefusingLoopbackPort { localPort in
+        let lifetime = SSHConnectionLifetime()
+        let service = SSHRemotePortForwardService(
+            client: fixture.client,
+            requestedForward: SSHRemotePortForward(
+                localHost: "127.0.0.1",
+                localPort: localPort,
+                remoteHost: "127.0.0.1",
+                remotePort: 0
+            ),
+            lifetime: lifetime,
+            metadata: testConnectionMetadata(),
+            logHandler: .disabled,
+            transportBackendPreference: .legacy
+        )
+        let transport = fixture.transport
+        let activation = fixture.activation
+
+        let messages = try await service.withForward { forward in
+            #expect(forward.remotePort == 47_000)
+
+            // The refused local connect must close the forwarded channel promptly
+            // instead of leaving it open until the forwarding scope ends.
+            let messages: [SSHConnectionMessage]
+            do {
+                messages = try await withRemotePortForwardThrowingTestTimeout {
+                    while true {
+                        let messages = try await sentConnectionMessages(
+                            on: transport,
+                            activation: activation
+                        )
+                        if messages.contains(
+                            .channelClose(SSHChannelCloseMessage(recipientChannel: 55))
+                        ) {
+                            return messages
+                        }
+                        try await Task.sleep(nanoseconds: 10_000_000)
+                    }
+                }
+            } catch {
+                // Let the forwarding scope tear down even when the close never came.
+                await transport.appendReceiveChunks(serverReplyChunks)
+                throw error
+            }
+            await transport.appendReceiveChunks(serverReplyChunks)
+            return messages
+        }
+
+        let confirmationIndex = messages.firstIndex { message in
+            if case let .channelOpenConfirmation(confirmation) = message {
+                return confirmation.recipientChannel == 55
+            }
+            return false
+        }
+        let closeIndex = messages.firstIndex(
+            of: .channelClose(SSHChannelCloseMessage(recipientChannel: 55))
+        )
+        #expect(confirmationIndex != nil)
+        #expect(closeIndex != nil)
+        if let confirmationIndex, let closeIndex {
+            #expect(confirmationIndex < closeIndex)
+        }
+        #expect(await lifetime.active())
+    }
+}
+
+private func sentConnectionMessages(
+    on transport: ProtocolClientMockSSHByteStreamTransport,
+    activation: SSHCurve25519TransportActivation
+) async throws -> [SSHConnectionMessage] {
+    let sentPayloads = await transport.sentPayloads()
+    var parser = try SSHInboundEncryptedPacketParser(
+        negotiatedAlgorithms: activation.negotiation.algorithms,
+        keyMaterial: activation.transportKeyMaterial,
+        direction: .clientToServer,
+        initialSequenceNumber: 1
+    )
+    parser.append(bytes: Array(sentPayloads.dropFirst(2).joined()))
+
+    var messages: [SSHConnectionMessage] = []
+    while let packet = try parser.nextPacket() {
+        if let message = try? SSHConnectionMessageParser().parse(packet.payload) {
+            messages.append(message)
+        }
+    }
+    return messages
+}
+
 private enum RemotePortForwardTestError: Error {
     case syntheticBridgeFailure
     case timedOut

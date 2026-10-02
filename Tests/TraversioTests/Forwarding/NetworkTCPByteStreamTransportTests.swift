@@ -51,6 +51,28 @@ func ordinaryModernTransportHandleCloseTearsDownDeterministicallyWhilePeerStaysO
 
 @available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
 @Test
+func modernScopedConnectionFailsWhenPeerRefusesConnection() async throws {
+    // The legacy scoped connection's refusal handling mirrors this behavior: the
+    // modern scope fails its first operation when the peer refuses the connection.
+    try await withRefusingLoopbackPort { port in
+        do {
+            _ = try await withConnectionRefusalTestTimeout {
+                try await SSHTCPByteStreamTransportFactory.withConnected(
+                    to: SSHSocketEndpoint(host: "127.0.0.1", port: port),
+                    preference: .modern
+                ) { transport in
+                    try await transport.receive(atLeast: 1, atMost: 4096)
+                }
+            }
+            Issue.record("Expected the refused modern scoped connection to fail")
+        } catch {
+            #expect(isConnectionRefusedError(error), "Unexpected error: \(error)")
+        }
+    }
+}
+
+@available(macOS 26.0, iOS 26.0, tvOS 26.0, watchOS 26.0, visionOS 26.0, *)
+@Test
 func factoryRefusesToVendBareModernTransportWithoutDeterministicClose() async throws {
     // Proves the escaped-modern trap is gone: a bare modern transport (no
     // structured scope, no cancel/close API) can never be constructed silently.

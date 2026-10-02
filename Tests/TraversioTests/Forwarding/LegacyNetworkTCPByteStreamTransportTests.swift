@@ -69,6 +69,110 @@ func tcpByteStreamTransportFactoryLegacyPreferenceRoundTripsStreamData() async t
 }
 
 @available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func legacyStartupStateOutcomeFailsOnlyScopedRefusals() {
+    typealias Transport = LegacyNetworkTCPByteStreamTransport
+    let refused = NWError.posix(.ECONNREFUSED)
+    let networkDown = NWError.posix(.ENETDOWN)
+    let unreachable = NWError.posix(.EHOSTUNREACH)
+    let nameResolution = NWError.dns(DNSServiceErrorType(kDNSServiceErr_NoSuchRecord))
+
+    #expect(Transport.startupStateOutcome(for: .waiting(refused), refusalHandling: .fail) == .refused(refused))
+    #expect(Transport.startupStateOutcome(for: .waiting(refused), refusalHandling: .awaitPathChange) == .keepWaiting)
+
+    for error in [networkDown, unreachable, nameResolution] {
+        #expect(Transport.startupStateOutcome(for: .waiting(error), refusalHandling: .fail) == .keepWaiting)
+        #expect(Transport.startupStateOutcome(for: .waiting(error), refusalHandling: .awaitPathChange) == .keepWaiting)
+    }
+
+    for handling in [Transport.ConnectionRefusalHandling.fail, .awaitPathChange] {
+        #expect(Transport.startupStateOutcome(for: .setup, refusalHandling: handling) == .keepWaiting)
+        #expect(Transport.startupStateOutcome(for: .preparing, refusalHandling: handling) == .keepWaiting)
+        #expect(Transport.startupStateOutcome(for: .ready, refusalHandling: handling) == .ready)
+        #expect(Transport.startupStateOutcome(for: .failed(refused), refusalHandling: handling) == .failed(refused))
+        #expect(Transport.startupStateOutcome(for: .cancelled, refusalHandling: handling) == .cancelled)
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func legacyScopedConnectionFailsWhenPeerRefusesConnection() async throws {
+    try await withRefusingLoopbackPort { port in
+        do {
+            _ = try await withConnectionRefusalTestTimeout {
+                try await SSHTCPByteStreamTransportFactory.withConnected(
+                    to: SSHSocketEndpoint(host: "127.0.0.1", port: port),
+                    preference: .legacy
+                ) { _ in
+                    true
+                }
+            }
+            Issue.record("Expected the refused scoped connection to fail")
+        } catch {
+            #expect(isConnectionRefusedError(error), "Unexpected error: \(error)")
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test
+func legacyBareConnectionKeepsWaitingWhenPeerRefusesConnection() async throws {
+    try await withRefusingLoopbackPort { port in
+        do {
+            let transport = try await withConnectionRefusalTestTimeout(
+                nanoseconds: 300_000_000
+            ) {
+                try await LegacyNetworkTCPByteStreamTransport.connect(
+                    to: SSHSocketEndpoint(host: "127.0.0.1", port: port)
+                )
+            }
+            await transport.close()
+            Issue.record("Expected the bare connection to keep waiting for a path change")
+        } catch {
+            // The timeout cancels the waiting connect, and the helper returns only
+            // after that cancellation has ended it.
+            #expect(
+                error as? LoopbackConnectionRefusalTestError == .timedOut,
+                "Unexpected error: \(error)"
+            )
+        }
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
+@Test(arguments: ["127.0.0.1", "::1"])
+func legacyScopedConnectionToLocalhostReachesSingleFamilyListener(
+    listenerHost: String
+) async throws {
+    let listener = try SSHTCPListenerFactory.makeListener(
+        localHost: listenerHost,
+        localPort: 0,
+        preference: .legacy
+    )
+    let listenerTask = Task {
+        try await listener.run { acceptedConnection in
+            await acceptedConnection.close()
+        }
+    }
+    defer {
+        listenerTask.cancel()
+    }
+    let port = try await listener.readyPort()
+
+    for _ in 0..<20 {
+        let didConnect = try await withConnectionRefusalTestTimeout {
+            try await SSHTCPByteStreamTransportFactory.withConnected(
+                to: SSHSocketEndpoint(host: "localhost", port: port),
+                preference: .legacy
+            ) { _ in
+                true
+            }
+        }
+        #expect(didConnect)
+    }
+}
+
+@available(macOS 10.15, iOS 13.0, tvOS 13.0, watchOS 6.0, visionOS 1.0, *)
 private func collectBytesUntilEndOfStream(
     from transport: any SSHByteStreamTransport
 ) async throws -> [UInt8] {

@@ -167,8 +167,64 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
         )
     }
 
+    /// How the startup wait treats a peer that refuses the connection.
+    ///
+    /// `NWConnection` reports a refused connect as `.waiting(ECONNREFUSED)`, not
+    /// `.failed`. It does not retry just because the port starts listening; it
+    /// waits for a network path change, a `restart()`, or cancellation.
+    enum ConnectionRefusalHandling: Equatable, Sendable {
+        /// Keep waiting for a path change. Bare and handle-owned connections use
+        /// this; SSH connection setup is bounded by the connection-setup timeout
+        /// when one is configured.
+        case awaitPathChange
+        /// Fail with the refusal error. Every caller-owned scope uses this,
+        /// including remote-forward bridges and the structured route root,
+        /// matching the modern `NetworkConnection<TCP>` scope, which also fails
+        /// on refusal.
+        case fail
+    }
+
+    enum StartupStateOutcome: Equatable, Sendable {
+        case keepWaiting
+        case ready
+        case failed(NWError)
+        case refused(NWError)
+        case cancelled
+    }
+
+    static func startupStateOutcome(
+        for state: NWConnection.State,
+        refusalHandling: ConnectionRefusalHandling
+    ) -> StartupStateOutcome {
+        switch state {
+        case .ready:
+            return .ready
+        case let .failed(error):
+            return .failed(error)
+        case .cancelled:
+            return .cancelled
+        case let .waiting(error):
+            guard refusalHandling == .fail,
+                  case .posix(.ECONNREFUSED) = error else {
+                return .keepWaiting
+            }
+            return .refused(error)
+        case .setup, .preparing:
+            return .keepWaiting
+        @unknown default:
+            return .keepWaiting
+        }
+    }
+
     package static func connect(
         to endpoint: SSHSocketEndpoint
+    ) async throws -> LegacyNetworkTCPByteStreamTransport {
+        try await self.connect(to: endpoint, refusalHandling: .awaitPathChange)
+    }
+
+    private static func connect(
+        to endpoint: SSHSocketEndpoint,
+        refusalHandling: ConnectionRefusalHandling
     ) async throws -> LegacyNetworkTCPByteStreamTransport {
         guard let port = NWEndpoint.Port(rawValue: endpoint.port) else {
             throw SSHTransportError.invalidPort(endpoint.port)
@@ -186,7 +242,7 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
             )
         )
 
-        try await self.waitUntilReady(box)
+        try await self.waitUntilReady(box, refusalHandling: refusalHandling)
         return LegacyNetworkTCPByteStreamTransport(box: box)
     }
 
@@ -194,7 +250,9 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
         to endpoint: SSHSocketEndpoint,
         _ body: @escaping (LegacyNetworkTCPByteStreamTransport) async throws -> Result
     ) async throws -> Result {
-        let transport = try await self.connect(to: endpoint)
+        // Scoped callers such as remote-forward bridges do not bound this wait,
+        // so a refusal must end it instead of holding the scope open.
+        let transport = try await self.connect(to: endpoint, refusalHandling: .fail)
 
         do {
             let result = try await body(transport)
@@ -377,7 +435,10 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
         self.box.cancel()
     }
 
-    private static func waitUntilReady(_ box: ConnectionBox) async throws {
+    private static func waitUntilReady(
+        _ box: ConnectionBox,
+        refusalHandling: ConnectionRefusalHandling
+    ) async throws {
         let completionState = CompletionState<Void>()
 
         try await withTaskCancellationHandler {
@@ -385,18 +446,21 @@ package actor LegacyNetworkTCPByteStreamTransport: SSHCancellationControllingByt
                 completionState.install(continuation)
 
                 guard box.setStartupStateUpdateHandler({ state in
-                    switch state {
+                    switch self.startupStateOutcome(for: state, refusalHandling: refusalHandling) {
                     case .ready:
                         box.clearStateUpdateHandlerIfActive()
                         completionState.resume(with: .success(()))
                     case let .failed(error):
                         box.clearStateUpdateHandlerIfActive()
                         completionState.resume(with: .failure(error))
+                    case let .refused(error):
+                        // A waiting connection is not terminal, so cancel it
+                        // before reporting the refusal.
+                        box.cancel()
+                        completionState.resume(with: .failure(error))
                     case .cancelled:
                         completionState.resume(with: .failure(CancellationError()))
-                    case .setup, .waiting, .preparing:
-                        break
-                    @unknown default:
+                    case .keepWaiting:
                         break
                     }
                 }) else {
