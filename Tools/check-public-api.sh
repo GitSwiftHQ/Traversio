@@ -39,20 +39,33 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 cd "$ROOT_DIR"
 
-swift package dump-symbol-graph \
-  --minimum-access-level public \
-  --skip-synthesized-members >/dev/null
+# Declaration text in the symbol graph depends on the SwiftPM build system, not
+# on the compiler version. The Swift Build build system emits symbol graphs from
+# the compiler during the build, so declarations keep the type spelling written
+# in source. The native build system extracts them from the built module with
+# fully qualified type spelling. Pin the build system so the baseline does not
+# change when a toolchain changes its default.
+BUILD_SYSTEM="swiftbuild"
 
-SYMBOL_GRAPH="$(
-  find "$ROOT_DIR/.build" \
-    -path '*/symbolgraph/Traversio.symbols.json' \
-    -type f \
-    -print \
-    | sort \
-    | tail -n 1
-)"
+if ! DUMP_OUTPUT="$(
+  swift package \
+    --build-system "$BUILD_SYSTEM" \
+    dump-symbol-graph \
+    --minimum-access-level public \
+    --skip-synthesized-members 2>&1
+)"; then
+  printf '%s\n' "$DUMP_OUTPUT" >&2
+  echo "error: swift package dump-symbol-graph failed." >&2
+  exit 1
+fi
 
-if [[ -z "$SYMBOL_GRAPH" ]]; then
+# Read the graph from the directory this run reports so a stale graph left by
+# another build system or toolchain under .build is never compared.
+SYMBOL_GRAPH_DIR="$(printf '%s\n' "$DUMP_OUTPUT" | sed -n 's/^Files written to //p' | tail -n 1)"
+SYMBOL_GRAPH="$SYMBOL_GRAPH_DIR/Traversio.symbols.json"
+
+if [[ -z "$SYMBOL_GRAPH_DIR" || ! -f "$SYMBOL_GRAPH" ]]; then
+  printf '%s\n' "$DUMP_OUTPUT" >&2
   echo "error: Traversio.symbols.json was not produced by swift package dump-symbol-graph." >&2
   exit 66
 fi
@@ -61,7 +74,7 @@ CURRENT="$TMP_DIR/public-api-baseline.tsv"
 
 {
   echo "# Traversio public API baseline"
-  echo "# Generated with: swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members"
+  echo "# Generated with: swift package --build-system $BUILD_SYSTEM dump-symbol-graph --minimum-access-level public --skip-synthesized-members"
   echo "# Format: kind<TAB>path<TAB>precise-symbol-id<TAB>declaration"
   jq -r '
     .symbols

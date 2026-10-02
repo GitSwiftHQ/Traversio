@@ -1,5 +1,5 @@
 # Traversio public API baseline
-# Generated with: swift package dump-symbol-graph --minimum-access-level public --skip-synthesized-members
+# Generated with: swift package --build-system swiftbuild dump-symbol-graph --minimum-access-level public --skip-synthesized-members
 # Format: kind<TAB>path<TAB>precise-symbol-id<TAB>declaration
 swift.struct	SFTPClient	s:9Traversio10SFTPClientV	struct SFTPClient
 swift.method	SFTPClient.close()	s:9Traversio10SFTPClientV5closeyyYaKF	func close() async throws
@@ -217,13 +217,13 @@ swift.enum.case	SSHClientLogLevel.notice	s:9Traversio17SSHClientLogLevelO6notice
 swift.enum.case	SSHClientLogLevel.warning	s:9Traversio17SSHClientLogLevelO7warningyA2CmF	case warning
 swift.class	SSHClientLogRecorder	s:9Traversio20SSHClientLogRecorderC	final class SSHClientLogRecorder
 swift.method	SSHClientLogRecorder.clear()	s:9Traversio20SSHClientLogRecorderC5clearyyF	func clear()
-swift.method	SSHClientLogRecorder.diagnosticReport(for:)	s:9Traversio20SSHClientLogRecorderC16diagnosticReport3forSSSgs5Error_pSg_tF	func diagnosticReport(for error: (any Error)? = nil) -> String?
+swift.method	SSHClientLogRecorder.diagnosticReport(for:)	s:9Traversio20SSHClientLogRecorderC16diagnosticReport3forSSSgs5Error_pSg_tF	func diagnosticReport(for error: Error? = nil) -> String?
 swift.init	SSHClientLogRecorder.init(maximumEventCount:)	s:9Traversio20SSHClientLogRecorderC17maximumEventCountACSi_tcfc	init(maximumEventCount: Int = 80)
 swift.method	SSHClientLogRecorder.logHandler(minimumLevel:)	s:9Traversio20SSHClientLogRecorderC10logHandler12minimumLevelAA0bcF0VAA0bcH0O_tF	func logHandler(minimumLevel: SSHClientLogLevel = .info) -> SSHClientLogHandler
 swift.method	SSHClientLogRecorder.record(_:)	s:9Traversio20SSHClientLogRecorderC6recordyyAA0bC5EventVF	func record(_ event: SSHClientLogEvent)
 swift.method	SSHClientLogRecorder.snapshot()	s:9Traversio20SSHClientLogRecorderC8snapshotAA0bcD8SnapshotVyF	func snapshot() -> SSHClientLogRecorderSnapshot
 swift.struct	SSHClientLogRecorderSnapshot	s:9Traversio28SSHClientLogRecorderSnapshotV	struct SSHClientLogRecorderSnapshot
-swift.method	SSHClientLogRecorderSnapshot.diagnosticReport(for:)	s:9Traversio28SSHClientLogRecorderSnapshotV16diagnosticReport3forSSSgs5Error_pSg_tF	func diagnosticReport(for error: (any Error)? = nil) -> String?
+swift.method	SSHClientLogRecorderSnapshot.diagnosticReport(for:)	s:9Traversio28SSHClientLogRecorderSnapshotV16diagnosticReport3forSSSgs5Error_pSg_tF	func diagnosticReport(for error: Error? = nil) -> String?
 swift.property	SSHClientLogRecorderSnapshot.droppedEventCount	s:9Traversio28SSHClientLogRecorderSnapshotV17droppedEventCountSivp	let droppedEventCount: Int
 swift.property	SSHClientLogRecorderSnapshot.events	s:9Traversio28SSHClientLogRecorderSnapshotV6eventsSayAA0bC5EventVGvp	let events: [SSHClientLogEvent]
 swift.property	SSHClientLogRecorderSnapshot.formattedLines	s:9Traversio28SSHClientLogRecorderSnapshotV14formattedLinesSaySSGvp	var formattedLines: [String] { get }
@@ -510,8 +510,8 @@ swift.type.method	SSHHostKeyPolicy.knownHostsFile(_:)	s:9Traversio16SSHHostKeyPo
 swift.type.method	SSHHostKeyPolicy.knownHostsFile(_:additionalLookupNames:)	s:9Traversio16SSHHostKeyPolicyV14knownHostsFile_21additionalLookupNamesACSS_SaySSGtFZ	static func knownHostsFile(_ path: String, additionalLookupNames: [String]) -> SSHHostKeyPolicy
 swift.type.method	SSHHostKeyPolicy.requireMatch(_:)	s:9Traversio16SSHHostKeyPolicyV12requireMatchyAcA014SSHTrustedHostC0VFZ	static func requireMatch(_ trustedHostKey: SSHTrustedHostKey) -> SSHHostKeyPolicy
 swift.type.method	SSHHostKeyPolicy.requireMatchAny(_:)	s:9Traversio16SSHHostKeyPolicyV15requireMatchAnyyACSayAA014SSHTrustedHostC0VGFZ	static func requireMatchAny(_ trustedHostKeys: [SSHTrustedHostKey]) -> SSHHostKeyPolicy
-swift.type.method	SSHHostKeyPolicy.trustOnFirstUse(lookup:store:)	s:9Traversio16SSHHostKeyPolicyV15trustOnFirstUse6lookup5storeAcA014SSHTrustedHostC0VSgSS_s6UInt16VtYaYbKc_yAA0bC12StoreRequestVYaYbKctFZ	static func trustOnFirstUse(lookup: @escaping @Sendable (String, UInt16) async throws -> SSHTrustedHostKey?, store: @escaping @Sendable (SSHHostKeyStoreRequest) async throws -> Void) -> SSHHostKeyPolicy
-swift.type.method	SSHHostKeyPolicy.trustOnFirstUse(lookup:store:onStoredHostKeyMismatch:)	s:9Traversio16SSHHostKeyPolicyV15trustOnFirstUse6lookup5store012onStoredHostC8MismatchAcA010SSHTrustedmC0VSgSS_s6UInt16VtYaYbKc_yAA0bC12StoreRequestVYaYbKcAA0bC14ChangeDecisionOAA0bcsR0VYaYbKctFZ	static func trustOnFirstUse(lookup: @escaping @Sendable (String, UInt16) async throws -> SSHTrustedHostKey?, store: @escaping @Sendable (SSHHostKeyStoreRequest) async throws -> Void, onStoredHostKeyMismatch: @escaping @Sendable (SSHHostKeyChangeRequest) async throws -> SSHHostKeyChangeDecision) -> SSHHostKeyPolicy
+swift.type.method	SSHHostKeyPolicy.trustOnFirstUse(lookup:store:)	s:9Traversio16SSHHostKeyPolicyV15trustOnFirstUse6lookup5storeAcA014SSHTrustedHostC0VSgSS_s6UInt16VtYaYbKc_yAA0bC12StoreRequestVYaYbKctFZ	static func trustOnFirstUse(lookup: @escaping @Sendable (_ endpointHost: String, _ endpointPort: UInt16) async throws -> SSHTrustedHostKey?, store: @escaping @Sendable (SSHHostKeyStoreRequest) async throws -> Void) -> SSHHostKeyPolicy
+swift.type.method	SSHHostKeyPolicy.trustOnFirstUse(lookup:store:onStoredHostKeyMismatch:)	s:9Traversio16SSHHostKeyPolicyV15trustOnFirstUse6lookup5store012onStoredHostC8MismatchAcA010SSHTrustedmC0VSgSS_s6UInt16VtYaYbKc_yAA0bC12StoreRequestVYaYbKcAA0bC14ChangeDecisionOAA0bcsR0VYaYbKctFZ	static func trustOnFirstUse(lookup: @escaping @Sendable (_ endpointHost: String, _ endpointPort: UInt16) async throws -> SSHTrustedHostKey?, store: @escaping @Sendable (SSHHostKeyStoreRequest) async throws -> Void, onStoredHostKeyMismatch: @escaping @Sendable (SSHHostKeyChangeRequest) async throws -> SSHHostKeyChangeDecision) -> SSHHostKeyPolicy
 swift.type.method	SSHHostKeyPolicy.trustOnFirstUse(using:)	s:9Traversio16SSHHostKeyPolicyV15trustOnFirstUse5usingACx_tAA0bC10TrustStoreRzlFZ	static func trustOnFirstUse<Store>(using store: Store) -> SSHHostKeyPolicy where Store : SSHHostKeyTrustStore
 swift.enum	SSHHostKeyPolicyError	s:9Traversio21SSHHostKeyPolicyErrorO	enum SSHHostKeyPolicyError
 swift.enum.case	SSHHostKeyPolicyError.concurrentStoredHostKeyUpdate(endpointHost:endpointPort:expectedStoredHostKey:actualStoredHostKey:)	s:9Traversio21SSHHostKeyPolicyErrorO020concurrentStoredHostC6UpdateyACSS_s6UInt16VAA010SSHTrustedhC0VSgAItcACmF	case concurrentStoredHostKeyUpdate(endpointHost: String, endpointPort: UInt16, expectedStoredHostKey: SSHTrustedHostKey?, actualStoredHostKey: SSHTrustedHostKey?)
@@ -596,11 +596,11 @@ swift.enum.case	SSHOpenSSHKeyPair.Algorithm.ecdsaP384	s:9Traversio17SSHOpenSSHKe
 swift.enum.case	SSHOpenSSHKeyPair.Algorithm.ecdsaP521	s:9Traversio17SSHOpenSSHKeyPairV9AlgorithmO9ecdsaP521yA2EmF	case ecdsaP521
 swift.enum.case	SSHOpenSSHKeyPair.Algorithm.ed25519	s:9Traversio17SSHOpenSSHKeyPairV9AlgorithmO7ed25519yA2EmF	case ed25519
 swift.enum.case	SSHOpenSSHKeyPair.Algorithm.rsa(bitCount:)	s:9Traversio17SSHOpenSSHKeyPairV9AlgorithmO3rsayAESi_tcAEmF	case rsa(bitCount: Int)
-swift.property	SSHOpenSSHKeyPair.algorithm	s:9Traversio17SSHOpenSSHKeyPairV9algorithmAC9AlgorithmOvp	let algorithm: SSHOpenSSHKeyPair.Algorithm
+swift.property	SSHOpenSSHKeyPair.algorithm	s:9Traversio17SSHOpenSSHKeyPairV9algorithmAC9AlgorithmOvp	let algorithm: Algorithm
 swift.property	SSHOpenSSHKeyPair.authenticationMethod	s:9Traversio17SSHOpenSSHKeyPairV20authenticationMethodAA017SSHAuthenticationF0Ovp	let authenticationMethod: SSHAuthenticationMethod
 swift.property	SSHOpenSSHKeyPair.authorizedKeyLine	s:9Traversio17SSHOpenSSHKeyPairV17authorizedKeyLineSSvp	let authorizedKeyLine: String
 swift.property	SSHOpenSSHKeyPair.comment	s:9Traversio17SSHOpenSSHKeyPairV7commentSSvp	let comment: String
-swift.type.method	SSHOpenSSHKeyPair.generate(algorithm:comment:encryption:)	s:9Traversio17SSHOpenSSHKeyPairV8generate9algorithm7comment10encryptionA2C9AlgorithmO_SSAA0B23SSHPrivateKeyEncryptionVSgtKFZ	static func generate(algorithm: SSHOpenSSHKeyPair.Algorithm, comment: String = "traversio", encryption: SSHOpenSSHPrivateKeyEncryption? = nil) throws -> SSHOpenSSHKeyPair
+swift.type.method	SSHOpenSSHKeyPair.generate(algorithm:comment:encryption:)	s:9Traversio17SSHOpenSSHKeyPairV8generate9algorithm7comment10encryptionA2C9AlgorithmO_SSAA0B23SSHPrivateKeyEncryptionVSgtKFZ	static func generate(algorithm: Algorithm, comment: String = "traversio", encryption: SSHOpenSSHPrivateKeyEncryption? = nil) throws -> SSHOpenSSHKeyPair
 swift.property	SSHOpenSSHKeyPair.privateKeyPEM	s:9Traversio17SSHOpenSSHKeyPairV13privateKeyPEMSSvp	let privateKeyPEM: String
 swift.enum	SSHOpenSSHPrivateKeyAlgorithm	s:9Traversio29SSHOpenSSHPrivateKeyAlgorithmO	enum SSHOpenSSHPrivateKeyAlgorithm
 swift.property	SSHOpenSSHPrivateKeyAlgorithm.algorithmName	s:9Traversio29SSHOpenSSHPrivateKeyAlgorithmO13algorithmNameSSvp	var algorithmName: String { get }
@@ -618,8 +618,8 @@ swift.enum.case	SSHOpenSSHPrivateKeyEncryption.Cipher.aes192CTR	s:9Traversio30SS
 swift.enum.case	SSHOpenSSHPrivateKeyEncryption.Cipher.aes256CBC	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6CipherO9aes256CBCyA2EmF	case aes256CBC
 swift.enum.case	SSHOpenSSHPrivateKeyEncryption.Cipher.aes256CTR	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6CipherO9aes256CTRyA2EmF	case aes256CTR
 swift.init	SSHOpenSSHPrivateKeyEncryption.Cipher.init(rawValue:)	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6CipherO8rawValueAESgSS_tcfc	init?(rawValue: String)
-swift.property	SSHOpenSSHPrivateKeyEncryption.cipher	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6cipherAC6CipherOvp	let cipher: SSHOpenSSHPrivateKeyEncryption.Cipher
-swift.init	SSHOpenSSHPrivateKeyEncryption.init(passphrase:cipher:rounds:)	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV10passphrase6cipher6roundsACSS_AC6CipherOs6UInt32Vtcfc	init(passphrase: String, cipher: SSHOpenSSHPrivateKeyEncryption.Cipher = .aes256CTR, rounds: UInt32 = 24)
+swift.property	SSHOpenSSHPrivateKeyEncryption.cipher	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6cipherAC6CipherOvp	let cipher: Cipher
+swift.init	SSHOpenSSHPrivateKeyEncryption.init(passphrase:cipher:rounds:)	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV10passphrase6cipher6roundsACSS_AC6CipherOs6UInt32Vtcfc	init(passphrase: String, cipher: Cipher = .aes256CTR, rounds: UInt32 = 24)
 swift.property	SSHOpenSSHPrivateKeyEncryption.passphrase	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV10passphraseSSvp	let passphrase: String
 swift.property	SSHOpenSSHPrivateKeyEncryption.rounds	s:9Traversio30SSHOpenSSHPrivateKeyEncryptionV6roundss6UInt32Vvp	let rounds: UInt32
 swift.struct	SSHOpenSSHPrivateKeyInfo	s:9Traversio24SSHOpenSSHPrivateKeyInfoV	struct SSHOpenSSHPrivateKeyInfo
@@ -647,17 +647,17 @@ swift.method	SSHOpenSSHPrivateKeyInfo.PublicKey.authorizedKeyLine(comment:)	s:9T
 swift.property	SSHOpenSSHPrivateKeyInfo.PublicKey.fingerprintSHA256	s:9Traversio24SSHOpenSSHPrivateKeyInfoV06PublicD0V17fingerprintSHA256SSvp	var fingerprintSHA256: String { get }
 swift.property	SSHOpenSSHPrivateKeyInfo.PublicKey.index	s:9Traversio24SSHOpenSSHPrivateKeyInfoV06PublicD0V5indexSivp	let index: Int
 swift.property	SSHOpenSSHPrivateKeyInfo.PublicKey.publicKeyBlob	s:9Traversio24SSHOpenSSHPrivateKeyInfoV06PublicD0V06publicD4BlobSays5UInt8VGvp	let publicKeyBlob: [UInt8]
-swift.property	SSHOpenSSHPrivateKeyInfo.cipher	s:9Traversio24SSHOpenSSHPrivateKeyInfoV6cipherAC6CipherOvp	let cipher: SSHOpenSSHPrivateKeyInfo.Cipher
+swift.property	SSHOpenSSHPrivateKeyInfo.cipher	s:9Traversio24SSHOpenSSHPrivateKeyInfoV6cipherAC6CipherOvp	let cipher: Cipher
 swift.property	SSHOpenSSHPrivateKeyInfo.cipherName	s:9Traversio24SSHOpenSSHPrivateKeyInfoV10cipherNameSSvp	let cipherName: String
 swift.property	SSHOpenSSHPrivateKeyInfo.isEncrypted	s:9Traversio24SSHOpenSSHPrivateKeyInfoV11isEncryptedSbvp	var isEncrypted: Bool { get }
 swift.property	SSHOpenSSHPrivateKeyInfo.kdfName	s:9Traversio24SSHOpenSSHPrivateKeyInfoV7kdfNameSSvp	let kdfName: String
 swift.property	SSHOpenSSHPrivateKeyInfo.keyCount	s:9Traversio24SSHOpenSSHPrivateKeyInfoV8keyCounts6UInt32Vvp	let keyCount: UInt32
-swift.property	SSHOpenSSHPrivateKeyInfo.keyDerivationFunction	s:9Traversio24SSHOpenSSHPrivateKeyInfoV21keyDerivationFunctionAC0dgH0Ovp	let keyDerivationFunction: SSHOpenSSHPrivateKeyInfo.KeyDerivationFunction
+swift.property	SSHOpenSSHPrivateKeyInfo.keyDerivationFunction	s:9Traversio24SSHOpenSSHPrivateKeyInfoV21keyDerivationFunctionAC0dgH0Ovp	let keyDerivationFunction: KeyDerivationFunction
 swift.type.method	SSHOpenSSHPrivateKeyInfo.parse(_:)	s:9Traversio24SSHOpenSSHPrivateKeyInfoV5parseyACSSKFZ	static func parse(_ pem: String) throws -> SSHOpenSSHPrivateKeyInfo
 swift.type.method	SSHOpenSSHPrivateKeyInfo.parse(contentsOfFile:)	s:9Traversio24SSHOpenSSHPrivateKeyInfoV5parse14contentsOfFileACSS_tKFZ	static func parse(contentsOfFile path: String) throws -> SSHOpenSSHPrivateKeyInfo
-swift.property	SSHOpenSSHPrivateKeyInfo.primaryPublicKey	s:9Traversio24SSHOpenSSHPrivateKeyInfoV013primaryPublicD0AC0gD0Vvp	var primaryPublicKey: SSHOpenSSHPrivateKeyInfo.PublicKey { get }
+swift.property	SSHOpenSSHPrivateKeyInfo.primaryPublicKey	s:9Traversio24SSHOpenSSHPrivateKeyInfoV013primaryPublicD0AC0gD0Vvp	var primaryPublicKey: PublicKey { get }
 swift.property	SSHOpenSSHPrivateKeyInfo.privateKeyBlockByteCount	s:9Traversio24SSHOpenSSHPrivateKeyInfoV07privateD14BlockByteCountSivp	let privateKeyBlockByteCount: Int
-swift.property	SSHOpenSSHPrivateKeyInfo.publicKeys	s:9Traversio24SSHOpenSSHPrivateKeyInfoV10publicKeysSayAC06PublicD0VGvp	let publicKeys: [SSHOpenSSHPrivateKeyInfo.PublicKey]
+swift.property	SSHOpenSSHPrivateKeyInfo.publicKeys	s:9Traversio24SSHOpenSSHPrivateKeyInfoV10publicKeysSayAC06PublicD0VGvp	let publicKeys: [PublicKey]
 swift.enum	SSHOpenSSHPrivateKeyInfoError	s:9Traversio29SSHOpenSSHPrivateKeyInfoErrorO	enum SSHOpenSSHPrivateKeyInfoError
 swift.enum.case	SSHOpenSSHPrivateKeyInfoError.invalidBase64	s:9Traversio29SSHOpenSSHPrivateKeyInfoErrorO13invalidBase64yA2CmF	case invalidBase64
 swift.enum.case	SSHOpenSSHPrivateKeyInfoError.invalidEnvelope	s:9Traversio29SSHOpenSSHPrivateKeyInfoErrorO15invalidEnvelopeyA2CmF	case invalidEnvelope
@@ -918,7 +918,7 @@ swift.struct	SSHSFTPFileChunkSequence	s:9Traversio24SSHSFTPFileChunkSequenceV	st
 swift.struct	SSHSFTPFileChunkSequence.AsyncIterator	s:9Traversio24SSHSFTPFileChunkSequenceV13AsyncIteratorV	struct AsyncIterator
 swift.method	SSHSFTPFileChunkSequence.AsyncIterator.next()	s:9Traversio24SSHSFTPFileChunkSequenceV13AsyncIteratorV4nextAA0bC0VSgyYaKF	mutating func next() async throws -> SSHSFTPFileChunk?
 swift.typealias	SSHSFTPFileChunkSequence.Element	s:9Traversio24SSHSFTPFileChunkSequenceV7Elementa	typealias Element = SSHSFTPFileChunk
-swift.method	SSHSFTPFileChunkSequence.makeAsyncIterator()	s:9Traversio24SSHSFTPFileChunkSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> SSHSFTPFileChunkSequence.AsyncIterator
+swift.method	SSHSFTPFileChunkSequence.makeAsyncIterator()	s:9Traversio24SSHSFTPFileChunkSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> AsyncIterator
 swift.enum	SSHSFTPFileHandleError	s:9Traversio22SSHSFTPFileHandleErrorO	enum SSHSFTPFileHandleError
 swift.enum.case	SSHSFTPFileHandleError.cursorOffsetOverflow(current:byteCount:)	s:9Traversio22SSHSFTPFileHandleErrorO20cursorOffsetOverflowyACs6UInt64V_AFtcACmF	case cursorOffsetOverflow(current: UInt64, byteCount: UInt64)
 swift.struct	SSHSFTPFileSystemAttributes	s:9Traversio27SSHSFTPFileSystemAttributesV	struct SSHSFTPFileSystemAttributes
@@ -1007,8 +1007,8 @@ swift.enum.case	SSHSFTPTransferProgress.Operation.read	s:9Traversio23SSHSFTPTran
 swift.enum.case	SSHSFTPTransferProgress.Operation.write	s:9Traversio23SSHSFTPTransferProgressV9OperationO5writeyA2EmF	case write
 swift.property	SSHSFTPTransferProgress.bytesTransferred	s:9Traversio23SSHSFTPTransferProgressV16bytesTransferreds6UInt64Vvp	let bytesTransferred: UInt64
 swift.property	SSHSFTPTransferProgress.fractionCompleted	s:9Traversio23SSHSFTPTransferProgressV17fractionCompletedSdSgvp	var fractionCompleted: Double? { get }
-swift.init	SSHSFTPTransferProgress.init(operation:bytesTransferred:totalBytes:)	s:9Traversio23SSHSFTPTransferProgressV9operation16bytesTransferred10totalBytesA2C9OperationO_s6UInt64VAJSgtcfc	init(operation: SSHSFTPTransferProgress.Operation, bytesTransferred: UInt64, totalBytes: UInt64? = nil)
-swift.property	SSHSFTPTransferProgress.operation	s:9Traversio23SSHSFTPTransferProgressV9operationAC9OperationOvp	let operation: SSHSFTPTransferProgress.Operation
+swift.init	SSHSFTPTransferProgress.init(operation:bytesTransferred:totalBytes:)	s:9Traversio23SSHSFTPTransferProgressV9operation16bytesTransferred10totalBytesA2C9OperationO_s6UInt64VAJSgtcfc	init(operation: Operation, bytesTransferred: UInt64, totalBytes: UInt64? = nil)
+swift.property	SSHSFTPTransferProgress.operation	s:9Traversio23SSHSFTPTransferProgressV9operationAC9OperationOvp	let operation: Operation
 swift.property	SSHSFTPTransferProgress.totalBytes	s:9Traversio23SSHSFTPTransferProgressV10totalBytess6UInt64VSgvp	let totalBytes: UInt64?
 swift.typealias	SSHSFTPTransferProgressHandler	s:9Traversio30SSHSFTPTransferProgressHandlera	typealias SSHSFTPTransferProgressHandler = @Sendable (SSHSFTPTransferProgress) async -> Void
 swift.struct	SSHSFTPVersionExchange	s:9Traversio22SSHSFTPVersionExchangeV	struct SSHSFTPVersionExchange
@@ -1054,7 +1054,7 @@ swift.struct	SSHSessionEventSequence	s:9Traversio23SSHSessionEventSequenceV	stru
 swift.struct	SSHSessionEventSequence.AsyncIterator	s:9Traversio23SSHSessionEventSequenceV13AsyncIteratorV	struct AsyncIterator
 swift.method	SSHSessionEventSequence.AsyncIterator.next()	s:9Traversio23SSHSessionEventSequenceV13AsyncIteratorV4nextAA0bC0OSgyYaKF	mutating func next() async throws -> SSHSessionEvent?
 swift.typealias	SSHSessionEventSequence.Element	s:9Traversio23SSHSessionEventSequenceV7Elementa	typealias Element = SSHSessionEvent
-swift.method	SSHSessionEventSequence.makeAsyncIterator()	s:9Traversio23SSHSessionEventSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> SSHSessionEventSequence.AsyncIterator
+swift.method	SSHSessionEventSequence.makeAsyncIterator()	s:9Traversio23SSHSessionEventSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> AsyncIterator
 swift.struct	SSHSessionExitSignal	s:9Traversio20SSHSessionExitSignalV	struct SSHSessionExitSignal
 swift.property	SSHSessionExitSignal.didCoreDump	s:9Traversio20SSHSessionExitSignalV11didCoreDumpSbvp	let didCoreDump: Bool
 swift.property	SSHSessionExitSignal.errorMessage	s:9Traversio20SSHSessionExitSignalV12errorMessageSSSgvp	let errorMessage: String?
@@ -1116,7 +1116,7 @@ swift.struct	SSHTCPIPChannelEventSequence	s:9Traversio28SSHTCPIPChannelEventSequ
 swift.struct	SSHTCPIPChannelEventSequence.AsyncIterator	s:9Traversio28SSHTCPIPChannelEventSequenceV13AsyncIteratorV	struct AsyncIterator
 swift.method	SSHTCPIPChannelEventSequence.AsyncIterator.next()	s:9Traversio28SSHTCPIPChannelEventSequenceV13AsyncIteratorV4nextAA0bC0OSgyYaKF	mutating func next() async throws -> SSHTCPIPChannelEvent?
 swift.typealias	SSHTCPIPChannelEventSequence.Element	s:9Traversio28SSHTCPIPChannelEventSequenceV7Elementa	typealias Element = SSHTCPIPChannelEvent
-swift.method	SSHTCPIPChannelEventSequence.makeAsyncIterator()	s:9Traversio28SSHTCPIPChannelEventSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> SSHTCPIPChannelEventSequence.AsyncIterator
+swift.method	SSHTCPIPChannelEventSequence.makeAsyncIterator()	s:9Traversio28SSHTCPIPChannelEventSequenceV17makeAsyncIteratorAC0fG0VyF	func makeAsyncIterator() -> AsyncIterator
 swift.struct	SSHTimeoutPolicy	s:9Traversio16SSHTimeoutPolicyV	struct SSHTimeoutPolicy
 swift.property	SSHTimeoutPolicy.connectionSetupTimeInterval	s:9Traversio16SSHTimeoutPolicyV27connectionSetupTimeIntervalSdSgvp	let connectionSetupTimeInterval: TimeInterval?
 swift.type.property	SSHTimeoutPolicy.currentProfileDefault	s:9Traversio16SSHTimeoutPolicyV21currentProfileDefaultACvpZ	static let currentProfileDefault: SSHTimeoutPolicy
