@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.9 - 2026-10-03
 
 Reliability:
 
@@ -11,6 +11,14 @@ Reliability:
   ended. It now fails with the refusal error, as it already did on release 26
   and later. Other waiting reasons and ordinary SSH connections keep their
   existing behavior.
+
+Release tooling:
+
+- `Tools/check-public-api.sh` now pins SwiftPM's Swift Build build system and
+  reads the symbol graph that its own run wrote. Swift 6.4 changed the default
+  build system, and the two build systems spell some declarations differently,
+  so the check failed on an unchanged API. The public API baseline now records
+  source-spelled declarations; no public symbol was added, removed, or changed.
 
 ## 1.0.8 - 2026-07-15
 
